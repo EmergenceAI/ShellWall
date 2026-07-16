@@ -2,6 +2,17 @@ name = "ShellWall"
 version = "0.1.0"
 defaultTargets = ["shellwall"]
 
+# `autoImplicit` silently binds an unknown identifier appearing in a type as an
+# implicit type variable. In Prompt 04 that turned an accidentally-deleted
+# `Owner` declaration into an auto-bound generic, letting a meaningless
+# definition typecheck; the error surfaced several lines away as a confusing
+# "invalid dotted identifier". For a project whose entire value rests on a green
+# build MEANING something, that failure mode is unacceptable.
+# Applies to ShellWall's own modules only -- dependencies compile with their own
+# options, so Mathlib is unaffected.
+[leanOptions]
+autoImplicit = false
+
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"

@@ -1,3 +1,8 @@
--- This module serves as the root of the `ShellWall` library.
--- Import modules here that should be built as part of the library.
+-- Root of the ShellWall library. Import all submodules.
 import ShellWall.Basic
+import ShellWall.Syntax
+import ShellWall.Policy
+import ShellWall.Semantics
+import ShellWall.Safety
+import ShellWall.Decide
+import ShellWall.Gate
