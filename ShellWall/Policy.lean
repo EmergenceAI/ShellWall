@@ -39,7 +39,16 @@ inductive PathClass where
 -- of source `IsPublic.of_public_read` is meant to certify content from, so making
 -- it reachable means the Phase 8 noninterference proof must discharge a real
 -- public-read case rather than a vacuous one.
-def classify : Path → PathClass
+-- Approach (A): decompose the `FilePath` to its segment list and keep the
+-- Prompt 05 ordered subtree patterns verbatim.
+-- `FilePath.components` yields a leading "" for absolute paths
+-- (`/home/a` -> ["", "home", "a"]); filtering empty segments normalizes absolute,
+-- relative, and trailing-slash forms to the bare segment list the patterns expect,
+-- reproducing the prior `List String` behavior exactly (representation change only).
+def segments (p : Path) : List String := p.components.filter (· ≠ "")
+
+def classify (p : Path) : PathClass :=
+  match segments p with
   | "home" :: _ :: "public" :: _ => .publicRW   -- agent's public output subtree, any depth
   | "home" :: _ :: _             => .privateRW  -- rest of an agent's home, any depth
   | "shared" :: _                => .publicRO   -- world-readable frozen reference tree
@@ -70,7 +79,8 @@ inductive Owner where
 -- `"home" :: a :: _` already matches every depth under `home/<a>`. Ownership is
 -- therefore uniform across an agent's home, while `classify` is what varies
 -- between its public and private parts.
-def ownerOf : Path → Owner
+def ownerOf (p : Path) : Owner :=
+  match segments p with
   | "home" :: agentId :: _ => .agent agentId  -- an agent owns its whole home subtree
   | "shared" :: _          => .system         -- frozen reference tree, owned by system
   -- CHOICE: /tmp is `.system`-owned. Combined with `classify`'s `.publicRW`, this

@@ -1,6 +1,11 @@
 -- Placeholder removed; see design doc for motivation.
 
-abbrev Path := List String   -- canonical segments, no symlinks, e.g. ["home","user","f.txt"]
+-- Lean's standard path type: a structure wrapping a `String`, with real path
+-- operations (`components`, `join`, `/`, `parent`, ...). `DecidableEq` comes from
+-- the underlying `String` and is available without a manual instance (confirmed:
+-- `decide` closes `FilePath` equality). Policy subtree-matching decomposes to
+-- `components` inside `classify`/`ownerOf`; everywhere else `Path` flows opaquely.
+abbrev Path := System.FilePath
 
 inductive Content where
   | text   (s : String)

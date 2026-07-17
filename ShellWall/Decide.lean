@@ -18,8 +18,8 @@ The subprompt suggested deciding public-ness with a recursive
 That signature is NOT implementable, for two independent reasons:
 
 1. `of_public_read` needs `∃ p, isPublicPath p ∧ s p = some c`. `FileState` is a
-   FUNCTION `Path → Option Content` and `Path = List String` is infinite, so this
-   existential cannot be decided by search.
+   FUNCTION `Path → Option Content` and `Path` (`System.FilePath`) is infinite, so
+   this existential cannot be decided by search.
 2. `of_filter`/`of_sort` would require INVERTING `grepFilter`/`sortContent`: given
    an opaque `c`, decide whether `∃ pat c', c = grepFilter pat c'` with `c'`
    public. `Content` records no provenance, and `pat` ranges over all `String`.
