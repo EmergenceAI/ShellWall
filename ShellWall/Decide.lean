@@ -2,11 +2,12 @@ import ShellWall.Safety
 
 /-! ## Deciding `CanWrite` -/
 
--- `CanWrite a p` reduces to `ownerOf p = a`: `self` is the only constructor in
--- v1, and its sole premise is that equation.
--- TODO(v2): if delegation constructors are added to `CanWrite`, this becomes an
--- UNDER-approximation (it would reject writes a delegate is entitled to). It
--- stays sound in that direction, but must be revisited.
+/-- Boolean decision of `CanWrite a p`, which in v1 reduces to `ownerOf p = a`
+(`self` is `CanWrite`'s only constructor). Proved sound by `canWriteB_sound`.
+
+TODO(v2): if delegation constructors are added to `CanWrite`, this becomes an
+UNDER-approximation (rejecting writes a delegate is entitled to). Sound in that
+direction, but must be revisited. -/
 def canWriteB (a : Owner) (p : Path) : Bool := decide (ownerOf p = a)
 
 /-! ## Deciding public-ness of content
@@ -32,12 +33,13 @@ lockstep walk that threads state and stdin. At each stage we know how the conten
 was produced, so we never have to invert anything. `cmdOutIsPublic` below is a
 transcription of `IsPublic`'s constructors read FORWARDS (producer to product)
 rather than backwards.
-TODO(5b): prove `cmdOutIsPublic`/`checkFull`'s public flag implies `IsPublic`,
-i.e. that this provenance tracking is a sound under-approximation. -/
+RESOLVED (was TODO 5b): that this provenance flag implies `IsPublic` — i.e. it is a
+sound under-approximation — is exactly the second conjunct of `checkFull_sound`. -/
 
--- Public-ness of a command's stdout, given the state it runs in and whether its
--- stdin is provably public. Each case is justified by an `IsPublic` constructor
--- (or the absence of one).
+/-- Whether a command's stdout is provably public, given the state it runs in and
+whether its stdin is provably public. Each case reads an `IsPublic` constructor
+FORWARDS (or returns `false` where no constructor applies). Proved a sound
+under-approximation by `checkFull_sound`'s output-public conjunct. -/
 def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
   match c with
   -- of_public_read needs BOTH a public class AND `s p = some c`. A read of a
@@ -46,12 +48,8 @@ def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
   | .read p => isPublicPath p && (s p).isSome
   | .grep _ => stdinPub   -- of_filter
   | .sort   => stdinPub   -- of_sort
-  -- of_uniq (added this prompt): uniq output is public iff its input is, same as
-  -- grep/sort. This is the one decider change the of_uniq spec addition forces --
-  -- it was `false` in Prompt 06 (no of_uniq existed then), which is why case 9c
-  -- rejected. Flipping it to `stdinPub` keeps the decider aligned with the
-  -- extended IsPublic and makes 9c permit, as required.
-  | .uniq   => stdinPub   -- of_uniq
+  -- of_uniq: uniq output is public iff its input is, same safe class as grep/sort.
+  | .uniq   => stdinPub
   -- `wc` is aggregation/summarisation -- the DELIBERATE omission from `IsPublic`
   -- that guards against counting leaks. Never public.
   | .wc     => false
@@ -62,15 +60,15 @@ def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
 
 /-! ## Deciding safety -/
 
--- Safety of a single command in state `_s` with stdin public-ness `stdinPub`.
--- Mirrors `SafeCmd`'s constructors.
---
--- NOTE: `_s` is deliberately unused. `SafeCmd a c s` is indexed by the state, but
--- the only state-dependent premise is `IsPublic s c`, whose decision has been
--- factored out into `stdinPub` (computed by `cmdOutIsPublic` at the producing
--- stage, where the state IS consulted). `classify`/`ownerOf` are state-
--- independent policy. The parameter is kept for signature parallelism with
--- `SafeCmd`, which Phase 5c's proof will follow case-for-case.
+/-- Boolean decision of `SafeCmd` for a single command, given stdin public-ness
+`stdinPub`. Mirrors `SafeCmd`'s constructors case-for-case (which
+`checkFull_sound`'s single case follows).
+
+NOTE: the state parameter `_s` is deliberately unused. `SafeCmd` is state-indexed,
+but its only state-dependent premise is `IsPublic s stdin`, whose decision is
+factored out into `stdinPub` (computed by `cmdOutIsPublic` at the producing stage,
+where the state IS consulted); `classify`/`ownerOf` are state-independent. The
+parameter is kept for signature parallelism with `SafeCmd`. -/
 def checkCmd (a : Owner) (c : Cmd) (_s : FileState) (stdinPub : Bool) : Bool :=
   match c with
   -- read_ok / grep_ok / sort_ok / uniq_ok / wc_ok are all unconditional
@@ -96,14 +94,16 @@ def checkCmd (a : Owner) (c : Cmd) (_s : FileState) (stdinPub : Bool) : Bool :=
   | .rm p    => canWriteB a p
   | .mkdir p => canWriteB a p
 
--- Lockstep walk. Returns `(isSafe, stdoutIsPublic)`, threading filesystem state
--- and stdin exactly as `evalPipelineFull` does.
---
--- CONSEQUENCE (intended, but load-bearing): `checkSafe`'s notion of "the content
--- written" is DEFINED by `evalPipelineFull`, i.e. by the execution model. Safety
--- is checked against what the model says actually happens, so `checkSafe`'s
--- correctness is downstream of the semantics' fidelity -- already this project's
--- central assumption (§4 / Smoosh differential-testing requirement).
+/-- The lockstep decision walk. Returns `(isSafe, stdoutIsPublic)`, threading
+filesystem state and stdin EXACTLY as `evalPipelineFull` does. Public-ness is
+tracked FORWARD as provenance (`stdinPub`/`cmdOutIsPublic`), never by backward
+search. The `andThen`/`orElse` output-public flag is exit-aware (branches on
+stage 1's exit like the semantics), while the safety component checks both
+branches (v1 conservatism, matching `SafePipeline`).
+
+CONSEQUENCE (intended, load-bearing): `checkSafe`'s notion of "the content written"
+is DEFINED by `evalPipelineFull`, so its correctness is downstream of the
+semantics' fidelity — this project's central assumption (§4). -/
 def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool × Bool
   | .single c, s, _stdin, pub => (checkCmd a c s pub, cmdOutIsPublic c s pub)
   -- `pipe` feeds stage 1's stdout into stage 2, and stage 2 is checked in the
@@ -142,8 +142,10 @@ def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool
       -- success the output is stage 1's, so its flag is pub₁.
       (ok₁ && ok₂, match ec₁ with | .success => pub₁ | .failure _ => pub₂)
 
--- A whole pipeline starts with `.empty` stdin (nothing piped from a terminal),
--- which is not certified public -- hence the initial `false`.
+/-- The v1 prove-or-reject gate's decision: `true` iff the pipeline is provably
+safe. A whole pipeline starts with `.empty` stdin (nothing piped from a terminal),
+not certified public — hence the initial `false`. Proved sound by `checkSafe_sound`
+(soundness only; completeness is intentionally not claimed). -/
 def checkSafe (a : Owner) (p : Pipeline) (s : FileState) : Bool :=
   (checkFull a p s .empty false).1
 
@@ -153,12 +155,14 @@ Soundness only: `checkSafe = true → SafePipeline`. Completeness (the converse)
 intentionally NOT claimed and is known to be unattainable -- the forward
 provenance walk rejects some genuinely-safe pipelines. -/
 
--- `canWriteB` reflects `CanWrite` (v1: `self` is the only constructor).
+/-- `canWriteB` is sound: if it returns `true`, `CanWrite` holds (v1: `self` is the
+only constructor). -/
 theorem canWriteB_sound {a : Owner} {p : Path} : canWriteB a p = true → CanWrite a p := by
   intro h
   exact CanWrite.self a p (of_decide_eq_true h)
 
--- `isPublicPath` reflects the public disjunction of `of_public_read`.
+/-- `isPublicPath` is sound for `of_public_read`: if it returns `true`, the path is
+classified `publicRO` or `publicRW`. -/
 theorem isPublicPath_sound {p : Path} :
     isPublicPath p = true → classify p = .publicRO ∨ classify p = .publicRW := by
   intro h
@@ -169,23 +173,24 @@ theorem isPublicPath_sound {p : Path} :
   · simp at h
   · simp at h
 
--- `grep`'s stdout is exactly `grepFilter pat stdin`, despite `evalCmd`'s inner
--- empty-match returning a literal `.empty` in one branch (which equals
--- `grepFilter pat stdin` there anyway).
+/-- `grep`'s output state is unchanged and its stdout is exactly
+`grepFilter pat stdin` — despite `evalCmd`'s inner empty-match returning a literal
+`.empty` in one branch (which equals `grepFilter pat stdin` there anyway). -/
 theorem grep_out (pat : String) (s : FileState) (stdin : Content) :
     (evalCmd (.grep pat) s stdin).1 = s ∧
     (evalCmd (.grep pat) s stdin).2.1 = grepFilter pat stdin := by
   simp only [evalCmd]
   split <;> simp_all
 
--- The load-bearing bridge, proved by induction mirroring the decider's own walk.
--- Two invariants are threaded together (the second feeds the first in `pipe`):
---   (safety)  the safety flag implies a `SafePipeline` derivation;
---   (out-pub) the output-public flag implies the ACTUAL threaded output content
---             (per `evalPipelineFull`) is `IsPublic`.
--- The out-pub conjunct is where the corrected exit-aware `andThen`/`orElse` flag
--- pays off: it branches on `ec₁` in step with `evalPipelineFull`, so each branch
--- discharges from the corresponding IH.
+/-- The load-bearing soundness bridge, by induction mirroring the decider's own
+walk. Two invariants are threaded together (the second feeds the first in `pipe`):
+- (safety) the safety flag implies a `SafePipeline` derivation;
+- (out-pub) the output-public flag implies the ACTUAL threaded output content
+  (per `evalPipelineFull`) is `IsPublic`.
+
+The out-pub conjunct is where the exit-aware `andThen`/`orElse` flag pays off: it
+branches on `ec₁` in step with `evalPipelineFull`, so each branch discharges from
+the corresponding IH. -/
 theorem checkFull_sound (a : Owner) (p : Pipeline) :
     ∀ (s : FileState) (stdin : Content) (pub : Bool),
       (pub = true → IsPublic s stdin) →
@@ -330,14 +335,13 @@ theorem checkFull_sound (a : Owner) (p : Pipeline) :
       | success => exact H1pub
       | failure n => exact H2pub
 
--- Soundness: if checkSafe approves, the pipeline is genuinely safe.
--- This direction is required and must be proved when the body is filled in.
---
--- Completeness (SafePipeline → checkSafe = true) is NOT a goal and is known
--- to be unattainable in general. Some genuinely safe pipelines will be
--- rejected by the v1 procedure; this is an accepted, deliberate limitation.
--- The conclusion is indexed by `.empty` top-level stdin, matching how `checkSafe`
--- and `evalPipeline` both start.
+/-- SOUNDNESS of the gate: if `checkSafe` permits, the pipeline really is
+`SafePipeline` (indexed by `.empty` top-level stdin, matching how `checkSafe` and
+`evalPipeline` start). This is the theorem that makes a permit verdict meaningful.
+
+Completeness (`SafePipeline → checkSafe = true`) is intentionally NOT claimed and
+is unattainable in general — v1 may reject some genuinely-safe pipelines (an
+accepted, deliberate limitation). -/
 theorem checkSafe_sound (a : Owner) (p : Pipeline) (s : FileState) :
     checkSafe a p s = true → SafePipeline a p s .empty := by
   intro h

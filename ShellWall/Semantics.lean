@@ -27,9 +27,12 @@ deployment assumption above is load-bearing — if the proxy ever returns
 unredirected stdout to the agent, v1's guarantee does not cover that channel.
 -/
 
--- `def` (per spec) rather than `abbrev`: FileState is semireducible, so it
--- unfolds during application elaboration but not at `instances` transparency.
--- If later proof work needs it to reduce transparently, revisit this.
+/-- The filesystem: a total map from paths to their content (or `none` if absent).
+There is no directory/file distinction (see `evalCmd`'s `mkdir`).
+
+`def` (per spec) rather than `abbrev`: `FileState` is semireducible, so it unfolds
+during application elaboration but not at `instances` transparency. If later proof
+work needs it to reduce transparently, revisit this. -/
 def FileState := Path → Option Content
 
 /-! ## Line model
@@ -37,44 +40,43 @@ def FileState := Path → Option Content
 Every text operation below shares one line convention. It is stated once here and
 used everywhere; `wc` deliberately does NOT use it (see `countLineBytes`). -/
 
--- FIDELITY: line model. A `text s` is split into lines by stripping at most one
--- trailing "\n" and then splitting on "\n":
---   "a\nb\n" -> ["a","b"]  (a trailing newline TERMINATES the last line; it is
---                           not a separator introducing an empty final line)
---   "a\nb"   -> ["a","b"]  (an unterminated final line is still a line)
---   ""       -> []         (no lines at all)
---   "\n"     -> [""]       (exactly one, empty, line)
--- This is the Unix text-file convention. The naive alternative (raw
--- `s.splitOn "\n"`) yields a spurious trailing "" for every newline-terminated
--- file, which would corrupt `uniq` output and every line count.
+/-- Split text into lines under the shared line model.
+
+FIDELITY: strip at most one trailing `"\n"`, then split on `"\n"`:
+`"a\nb\n" → ["a","b"]` (a trailing newline TERMINATES the last line, it is not a
+separator introducing an empty final line), `"a\nb" → ["a","b"]` (an unterminated
+final line is still a line), `"" → []`, `"\n" → [""]`. This is the Unix text-file
+convention; the naive `s.splitOn "\n"` would yield a spurious trailing `""` for
+every newline-terminated file, corrupting `uniq` output and line counts. -/
 def textToLines (s : String) : List String :=
   if s.isEmpty then []
   else
     let parts := s.splitOn "\n"
     if s.endsWith "\n" then parts.dropLast else parts
 
--- FIDELITY: rendering always newline-TERMINATES a non-empty result. This matches
--- grep/sort/uniq, which emit "a\nb\n" even when their input lacked a final
--- newline. Consequence: these ops are not the identity on unterminated input
--- ("a\nb" becomes "a\nb\n") -- which is exactly what real coreutils do.
+/-- Render lines back to text.
+
+FIDELITY: always newline-TERMINATES a non-empty result, matching grep/sort/uniq
+(which emit `"a\nb\n"` even when their input lacked a final newline). Consequence:
+these ops are not the identity on unterminated input — exactly as real coreutils. -/
 def linesToText (ls : List String) : String :=
   match ls with
   | [] => ""
   | _  => String.intercalate "\n" ls ++ "\n"
 
--- The model has three distinct representations of "no bytes": `.empty`,
--- `.text ""`, and `.binary ByteArray.empty`. Every empty result produced here is
--- canonicalised to `.empty`. See the report: this is a modeling wart of the
--- `Content` type, not a bash behaviour.
+/-- Render lines to `Content`, canonicalising the empty result to `.empty`.
+(The model has three "no bytes" values — `.empty`, `.text ""`,
+`.binary ByteArray.empty` — a `Content` wart; every empty result here is `.empty`.) -/
 def linesToContent (ls : List String) : Content :=
   match ls with
   | [] => .empty
   | _  => .text (linesToText ls)
 
--- FIDELITY: binary content is decoded as UTF-8 when valid and then treated as
--- text; bytes that are not valid UTF-8 have no line structure in this model and
--- yield `none`. Real coreutils operate bytewise over arbitrary bytes and have no
--- decode step at all.
+/-- A content's lines, if it has line structure.
+
+FIDELITY: binary content is decoded as UTF-8 when valid then treated as text;
+bytes that are not valid UTF-8 yield `none` (no line structure). Real coreutils
+operate bytewise with no decode step. -/
 def contentLines? : Content → Option (List String)
   | .empty    => some []
   | .text s   => some (textToLines s)
@@ -82,11 +84,12 @@ def contentLines? : Content → Option (List String)
 
 /-! ## Content helpers -/
 
--- FIDELITY: real bash has no text/binary distinction -- a file is just bytes, and
--- `cat a b` is byte concatenation. The `text`/`binary` split is an artifact of
--- this model, so the cross-type cases have no direct bash analogue. We
--- concatenate the UTF-8 encodings and return `.binary`, which preserves the bytes
--- exactly and never fails. `.empty` is the identity on both sides.
+/-- Concatenate two contents (the `cat a b` operation).
+
+FIDELITY: real bash has no text/binary distinction — a file is just bytes. The
+`text`/`binary` split is a model artifact, so cross-type cases concatenate the
+UTF-8 encodings and return `.binary` (byte-exact, never fails). `.empty` is the
+identity on both sides. -/
 def concatContent : Content → Content → Content
   | .empty, c => c
   | c, .empty => c
@@ -95,16 +98,17 @@ def concatContent : Content → Content → Content
   | .text s,    .binary b  => .binary (s.toUTF8 ++ b)
   | .binary b,  .text s    => .binary (b ++ s.toUTF8)
 
--- FIDELITY: substring only, not BRE regex.
--- Real `grep` matches POSIX basic regular expressions. Implementing a regex engine
--- is out of scope for v1, so this is `grep -F` behaviour: a line matches iff it
--- contains `pat` as a literal substring. An empty pattern matches every line,
--- which is what real grep does (and which `String.splitOn` would not give us --
--- it guards the empty separator and returns the whole string).
+/-- Whether a single line matches a grep pattern.
+
+FIDELITY: substring only, not BRE regex. Real `grep` matches POSIX basic regular
+expressions; a regex engine is out of scope for v1, so this is `grep -F`: a line
+matches iff it contains `pat` as a literal substring. An empty pattern matches
+every line (as real grep does). -/
 def lineMatches (pat : String) (line : String) : Bool :=
   if pat.isEmpty then true
   else (line.splitOn pat).length > 1
 
+/-- Keep the lines of `c` matching `pat` (the `grep pat` content transform). -/
 def grepFilter (pat : String) (c : Content) : Content :=
   match contentLines? c with
   | some ls => linesToContent (ls.filter (lineMatches pat))
@@ -112,22 +116,22 @@ def grepFilter (pat : String) (c : Content) : Content :=
   -- exits 0 if the pattern occurs; this model reports no match instead.
   | none    => .empty
 
--- FIDELITY: collation is Lean's `String ≤`, i.e. lexicographic by Unicode
--- codepoint. For valid UTF-8, codepoint order and byte order coincide, so this
--- matches `LC_ALL=C sort`. Real `sort` is locale-dependent (LC_COLLATE): under
--- e.g. en_US.UTF-8 it folds case and ignores punctuation, giving a different
--- order. v1 fixes the C locale.
+/-- Insert `x` into a sorted line list, before the first `y` with `x ≤ y`.
+
+FIDELITY: collation is Lean's `String ≤`, i.e. lexicographic by Unicode codepoint,
+matching `LC_ALL=C sort`. Real `sort` is locale-dependent (LC_COLLATE) and would
+fold case / ignore punctuation under e.g. en_US.UTF-8; v1 fixes the C locale. -/
 def insertSortedLine (x : String) : List String → List String
   | [] => [x]
   | y :: ys => if x ≤ y then x :: y :: ys else y :: insertSortedLine x ys
 
--- Stable and deterministic: `foldr` inserts from the right, and `insertSortedLine`
--- places `x` before the first `y` with `x ≤ y`, so equal lines retain their input
--- order. (Insertion sort, not a fast sort -- this is a specification, not a
--- production sorter.)
+/-- Sort a line list. Stable and deterministic: `foldr` inserts from the right and
+`insertSortedLine` places `x` before the first `y ≥ x`, so equal lines keep input
+order. (Insertion sort — a specification, not a production sorter.) -/
 def sortLines (ls : List String) : List String :=
   ls.foldr insertSortedLine []
 
+/-- Sort a content's lines (the `sort` content transform). -/
 def sortContent (c : Content) : Content :=
   match contentLines? c with
   | some ls => linesToContent (sortLines ls)
@@ -135,16 +139,18 @@ def sortContent (c : Content) : Content :=
   -- real `sort` would reorder them bytewise.
   | none    => c
 
--- FIDELITY: adjacent-only, exactly like real `uniq`. `uniq` alone does NOT
--- deduplicate an unsorted file -- only `sort | uniq` does. Deliberately no sort
--- happens in here; collapsing all duplicates would be the convenient-but-wrong
--- implementation.
+/-- Collapse ADJACENT duplicate lines.
+
+FIDELITY: adjacent-only, exactly like real `uniq` — `uniq` alone does NOT dedup an
+unsorted file, only `sort | uniq` does. Deliberately no sort here; collapsing all
+duplicates would be the convenient-but-wrong implementation. -/
 def uniqAdjacent : List String → List String
   | [] => []
   | [x] => [x]
   | x :: y :: rest =>
       if x == y then uniqAdjacent (y :: rest) else x :: uniqAdjacent (y :: rest)
 
+/-- Collapse adjacent duplicate lines of a content (the `uniq` content transform). -/
 def uniqContent (c : Content) : Content :=
   match contentLines? c with
   | some ls => linesToContent (uniqAdjacent ls)
@@ -154,47 +160,53 @@ def uniqContent (c : Content) : Content :=
 
 `wc` is specified over BYTES, not over the line model above -- see below. -/
 
+/-- The raw bytes of a content (UTF-8 encoding for text). Basis for `wc`, which is
+specified bytewise, not over the line model. -/
 def contentBytes : Content → ByteArray
   | .empty    => ByteArray.empty
   | .text s   => s.toUTF8
   | .binary b => b
 
+/-- Whether a byte is ASCII whitespace (space, tab, NL, VT, FF, CR). -/
 def isSpaceByte (b : UInt8) : Bool :=
   b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0B || b == 0x0C || b == 0x0D
 
--- FIDELITY: `wc -l` counts NEWLINE BYTES, not "lines" as `textToLines` models
--- them. On unterminated input the two differ: "a\nb" contains 1 newline but 2
--- lines. Counting newline bytes is the faithful choice, and this is deliberately
--- NOT `(textToLines s).length`.
+/-- Count newline bytes.
+
+FIDELITY: `wc -l` counts NEWLINE BYTES, not "lines" as `textToLines` models them —
+on unterminated input they differ (`"a\nb"` has 1 newline but 2 lines). Counting
+newline bytes is the faithful choice; deliberately NOT `(textToLines s).length`. -/
 def countLineBytes (bs : List UInt8) : Nat :=
   bs.foldl (fun acc b => if b == 0x0A then acc + 1 else acc) 0
 
--- FIDELITY: `wc -w` counts maximal runs of non-whitespace bytes.
+/-- Count words. FIDELITY: `wc -w` counts maximal runs of non-whitespace bytes. -/
 def countWordBytes (bs : List UInt8) : Nat :=
   (bs.foldl (fun (st : Nat × Bool) b =>
       if isSpaceByte b then (st.1, false)
       else if st.2 then st else (st.1 + 1, true))
     ((0 : Nat), false)).1
 
--- FIDELITY: default `wc` prints lines, words, and BYTES (as `-c`), not codepoints
--- (`-m`). "héllo" is 6 bytes but 5 codepoints, so this distinction is real; we
--- count bytes.
--- FIDELITY: output format here is "L W B\n" with single spaces. Real `wc`
--- right-aligns the counts in width-dependent columns (e.g. "      2       4
--- 12") and appends the filename when given one. The three numbers are faithful;
--- the spacing is not.
+/-- The `wc` content transform: emit line/word/byte counts of stdin.
+
+FIDELITY: default `wc` counts BYTES (`-c`), not codepoints (`-m`) — `"héllo"` is 6
+bytes but 5 codepoints; we count bytes. FIDELITY: output format is `"L W B\n"` with
+single spaces; real `wc` right-aligns in width-dependent columns and appends the
+filename. The three numbers are faithful; the spacing is not. -/
 def wcContent (c : Content) : Content :=
   let bs := (contentBytes c).toList
   .text s!"{countLineBytes bs} {countWordBytes bs} {bs.length}\n"
 
 /-! ## Command evaluation -/
 
--- Point update: the returned state differs from `s` only at `p`.
+/-- Point update: the returned state differs from `s` only at `p` (set to `c`).
+Drives `write` (set) and `rm` (`none`). -/
 def updateState (s : FileState) (p : Path) (c : Option Content) : FileState :=
   fun q => if q = p then c else s q
 
--- The input `Content` is stdin (the previous stage's stdout); the output
--- `Content` is stdout; the `FileState` in/out is the filesystem.
+/-- Execute a single command. The input `Content` is stdin (the previous stage's
+stdout); the output `Content` is stdout; the `FileState` in/out is the filesystem.
+Total and deterministic. Per-command exit codes and edge cases are the FIDELITY
+notes on each arm. -/
 def evalCmd : Cmd → FileState → Content → (FileState × Content × ExitCode)
   -- FIDELITY: `read` ignores stdin, like `cat p`. A missing file yields no stdout
   -- and exit 1, matching `cat`. The specific code 1 is a decision: `cat` uses 1,
@@ -240,7 +252,11 @@ def evalCmd : Cmd → FileState → Content → (FileState × Content × ExitCod
 
 /-! ## Pipeline evaluation -/
 
--- Internal helper carrying stdin/stdout; `evalPipeline` drops the final stdout.
+/-- Execute a pipeline, threading state, stdin/stdout, and exit codes between
+stages. This is the internal helper that carries the final stdout; `evalPipeline`
+is the public wrapper that drops it. The operator-specific threading (pipe feeds
+stdout→stdin; `;`/`&&`/`||` give fresh stdin and branch on exit) is the FIDELITY
+notes on each arm, and is what `SafePipeline`/`checkFull` mirror. -/
 def evalPipelineFull : Pipeline → FileState → Content → (FileState × Content × ExitCode)
   | .single c, s, stdin => evalCmd c s stdin
   -- FIDELITY: `a`'s stdout becomes `b`'s stdin, and the pipeline's exit code is
@@ -268,23 +284,22 @@ def evalPipelineFull : Pipeline → FileState → Content → (FileState × Cont
       | .success   => (s₁, outA, .success)
       | .failure _ => evalPipelineFull b s₁ .empty
 
--- FIDELITY: initial stdin for a whole pipeline is `.empty` -- nothing is piped in
--- from a terminal.
--- SCOPE: the final stdout is dropped. A pipeline that reads private data and
--- sends it to stdout with no redirect has no filesystem effect and is therefore
--- invisible to this model. stdout-to-terminal is not modeled as a public sink;
--- only filesystem writes are. This is a stated v1 decision, not an oversight --
--- see the `THREAT MODEL — stdout (v1)` note at the top of this file for the
--- decision and the deployment assumption it rests on.
+/-- Run a whole pipeline: the public denotation, returning only
+`(FileState × ExitCode)`. Starts from `.empty` stdin (nothing piped from a
+terminal) and drops the final stdout.
+
+SCOPE: dropping stdout means a pipeline that sends private data to unredirected
+stdout has no filesystem effect and is invisible to this model — a stated v1
+decision, not an oversight. See the `THREAT MODEL — stdout (v1)` note at the top of
+this file for the decision and the deployment assumption it rests on. -/
 def evalPipeline (p : Pipeline) (s : FileState) : FileState × ExitCode :=
   let (s', _, ec) := evalPipelineFull p s .empty
   (s', ec)
 
 /-! ## Noninterference helpers -/
 
--- Decides public-ness by cases on `classify`. `PathClass` already derives
--- `DecidableEq` in `Policy.lean`, and matching on the enum needs no instance at
--- all, so `Policy.lean` required no edit.
+/-- Whether a path is public (class `publicRW` or `publicRO`) — i.e. observable in
+the noninterference guarantee. A boolean view of `classify`. -/
 def isPublicPath (p : Path) : Bool :=
   match classify p with
   | .publicRW  => true
@@ -292,12 +307,14 @@ def isPublicPath (p : Path) : Bool :=
   | .privateRW => false
   | .privateRO => false
 
+/-- Restrict a filesystem to its public paths (private paths become `none`). The
+observable projection over which `shellwall_noninterference` is stated. -/
 def publicProjection (s : FileState) : FileState :=
   fun p => if isPublicPath p then s p else none
 
--- Stated in the pointwise `∀` form (rather than `publicProjection s₁ =
--- publicProjection s₂`) because it is the more primitive form to consume in
--- proofs; the noninterference theorem in `Safety.lean` takes this as its
--- hypothesis and concludes the `publicProjection` equation.
+/-- Two filesystems agree on every public path. The hypothesis of
+`shellwall_noninterference`. Stated in pointwise `∀` form (rather than
+`publicProjection s₁ = publicProjection s₂`) as the more primitive form to consume
+in proofs. -/
 def agreeOnPublicPaths (s₁ s₂ : FileState) : Prop :=
   ∀ p : Path, isPublicPath p = true → s₁ p = s₂ p

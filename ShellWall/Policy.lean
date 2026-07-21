@@ -1,9 +1,17 @@
 import ShellWall.Basic
 
+/-- The confidentiality/writability class the policy assigns to a path. Two axes:
+public vs. private (may its content flow to a public sink?) and RW vs. RO (may it
+be written?). `IsPublic.of_public_read` seeds public content from `public*` paths;
+the `write_*` safety rules gate writes on the `*RW` classes. -/
 inductive PathClass where
+  /-- Public and writable: readable as public data, and a valid public write sink. -/
   | publicRW
+  /-- Public and read-only: a frozen, world-readable source; never a write target. -/
   | publicRO
+  /-- Private and writable: writable by its owner; never a public sink. -/
   | privateRW
+  /-- Private and read-only: e.g. system config; readable, never written. -/
   | privateRO
   deriving DecidableEq
 
@@ -39,14 +47,15 @@ inductive PathClass where
 -- of source `IsPublic.of_public_read` is meant to certify content from, so making
 -- it reachable means the Phase 8 noninterference proof must discharge a real
 -- public-read case rather than a vacuous one.
--- Approach (A): decompose the `FilePath` to its segment list and keep the
--- Prompt 05 ordered subtree patterns verbatim.
--- `FilePath.components` yields a leading "" for absolute paths
--- (`/home/a` -> ["", "home", "a"]); filtering empty segments normalizes absolute,
--- relative, and trailing-slash forms to the bare segment list the patterns expect,
--- reproducing the prior `List String` behavior exactly (representation change only).
+/-- A path's segment list for policy matching (approach (A)). `FilePath.components`
+yields a leading `""` for absolute paths (`/home/a` → `["", "home", "a"]`);
+filtering empty segments normalizes absolute, relative, and trailing-slash forms
+to the bare segment list the subtree patterns expect. -/
 def segments (p : Path) : List String := p.components.filter (· ≠ "")
 
+/-- Classify a path per the policy table (see the design notes above for the
+deny-by-default, longest-match, and `publicRO` rationale). Total and deterministic;
+subtree matching via ordered patterns over `segments p`. -/
 def classify (p : Path) : PathClass :=
   match segments p with
   | "home" :: _ :: "public" :: _ => .publicRW   -- agent's public output subtree, any depth
@@ -54,12 +63,19 @@ def classify (p : Path) : PathClass :=
   | "shared" :: _                => .publicRO   -- world-readable frozen reference tree
   | "tmp" :: _                   => .publicRW   -- scratch space
   | "etc" :: _                   => .privateRO  -- system config: readable, never written
-  | "private" :: _               => .privateRW  -- owned private data (same as default;
-                                                --   kept as explicit intent, not a no-op rule)
+  -- DELIBERATELY REDUNDANT: `/private` gets the same class (`privateRW`) as the
+  -- default catch-all, so this arm changes no behavior. Kept as an explicit entry
+  -- documenting that `/private` is intentionally private data, not an unclassified
+  -- path that merely happens to land on the default.
+  | "private" :: _               => .privateRW
   | _                            => .privateRW  -- DEFAULT: deny-by-default (see above)
 
+/-- Who owns a path, i.e. who has write-authority over it via `CanWrite`. Either a
+named agent or the system. -/
 inductive Owner where
+  /-- An agent, identified by `id` (e.g. the owner of `/home/<id>/...`). -/
   | agent  (id : String)
+  /-- The system — owns everything not under an agent's home. -/
   | system
   deriving DecidableEq
 
@@ -79,6 +95,8 @@ inductive Owner where
 -- `"home" :: a :: _` already matches every depth under `home/<a>`. Ownership is
 -- therefore uniform across an agent's home, while `classify` is what varies
 -- between its public and private parts.
+/-- The owner of a path (see the design notes above). Total and deterministic;
+one rule covers an agent's entire home subtree, everything else is `system`. -/
 def ownerOf (p : Path) : Owner :=
   match segments p with
   | "home" :: agentId :: _ => .agent agentId  -- an agent owns its whole home subtree
