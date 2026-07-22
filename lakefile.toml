@@ -1,6 +1,10 @@
 name = "ShellWall"
 version = "0.1.0"
-defaultTargets = ["shellwall"]
+# `Test` is included so `lake build` elaborates Test/Battery.lean, whose `#guard`
+# assertions fail the build if any `checkSafe` verdict moves. The `fidelity` exe is
+# deliberately NOT a default target: it shells out to real bash, so it must be run
+# explicitly (`lake exe fidelity`), keeping `lake build` pure and hermetic.
+defaultTargets = ["shellwall", "Test"]
 
 # `autoImplicit` silently binds an unknown identifier appearing in a type as an
 # implicit type variable. In Prompt 04 that turned an accidentally-deleted
@@ -22,6 +26,13 @@ rev = "v4.31.0"
 [[lean_lib]]
 name = "ShellWall"
 
+[[lean_lib]]
+name = "Test"
+
 [[lean_exe]]
 name = "shellwall"
 root = "Main"
+
+[[lean_exe]]
+name = "fidelity"
+root = "FidelityMain"
