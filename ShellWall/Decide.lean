@@ -128,19 +128,20 @@ def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool
       let (ok₁, pub₁) := checkFull a p₁ s stdin pub
       let (s₁, _, ec₁) := evalPipelineFull p₁ s stdin
       let (ok₂, pub₂) := checkFull a p₂ s₁ .empty false
-      -- FAITHFUL output flag: `&&` runs stage 2 only when stage 1 SUCCEEDS; on
-      -- failure the pipeline's output is stage 1's, so its flag is pub₁. Branch
-      -- on stage 1's exit exactly as evalPipelineFull does. (The SAFETY component
-      -- `ok₁ && ok₂` still checks BOTH branches -- v1 conservatism unchanged; only
-      -- the output-public flag becomes exit-aware.)
-      (ok₁ && ok₂, match ec₁ with | .success => pub₂ | .failure _ => pub₁)
+      -- SAFETY: both branches safe AND the guard `p₁` touches only public paths
+      -- (the public-guard requirement matching SafePipeline.andThen -- closes the
+      -- exit-code implicit-flow channel; Prompt 13/14).
+      -- FAITHFUL output flag (unchanged from Prompt 09): `&&` runs stage 2 only on
+      -- SUCCESS, so on failure the pipeline's output — and its flag — is stage 1's.
+      (ok₁ && ok₂ && touchesOnlyPublic p₁, match ec₁ with | .success => pub₂ | .failure _ => pub₁)
   | .orElse p₁ p₂, s, stdin, pub =>
       let (ok₁, pub₁) := checkFull a p₁ s stdin pub
       let (s₁, _, ec₁) := evalPipelineFull p₁ s stdin
       let (ok₂, pub₂) := checkFull a p₂ s₁ .empty false
-      -- FAITHFUL output flag: `||` runs stage 2 only when stage 1 FAILS; on
-      -- success the output is stage 1's, so its flag is pub₁.
-      (ok₁ && ok₂, match ec₁ with | .success => pub₁ | .failure _ => pub₂)
+      -- SAFETY: both branches safe AND public-only guard (as andThen).
+      -- FAITHFUL output flag (unchanged): `||` runs stage 2 only on FAILURE, so on
+      -- success the output — and its flag — is stage 1's.
+      (ok₁ && ok₂ && touchesOnlyPublic p₁, match ec₁ with | .success => pub₁ | .failure _ => pub₂)
 
 /-- The v1 prove-or-reject gate's decision: `true` iff the pipeline is provably
 safe. A whole pipeline starts with `.empty` stdin (nothing piped from a terminal),
@@ -303,12 +304,14 @@ theorem checkFull_sound (a : Owner) (p : Pipeline) :
     obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ .empty false (by intro hc; simp at hc)
     rw [h2] at H2safe H2pub
     constructor
-    · have hcf1 : (checkFull a (.andThen p₁ p₂) s stdin pub).1 = (ok₁ && ok₂) := by
+    · have hcf1 : (checkFull a (.andThen p₁ p₂) s stdin pub).1
+                = (ok₁ && ok₂ && touchesOnlyPublic p₁) := by
         simp only [checkFull, h1, he1, h2]
       rw [hcf1]; intro hok
-      rw [Bool.and_eq_true] at hok
-      refine SafePipeline.andThen a p₁ p₂ s stdin (H1safe hok.1) ?_
-      rw [he1]; exact H2safe hok.2
+      simp only [Bool.and_eq_true] at hok
+      obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+      refine SafePipeline.andThen a p₁ p₂ s stdin h_g (H1safe h_ok1) ?_
+      rw [he1]; exact H2safe h_ok2
     · simp only [checkFull, evalPipelineFull, h1, he1, h2]
       cases ec₁ with
       | success => exact H2pub
@@ -324,12 +327,14 @@ theorem checkFull_sound (a : Owner) (p : Pipeline) :
     obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ .empty false (by intro hc; simp at hc)
     rw [h2] at H2safe H2pub
     constructor
-    · have hcf1 : (checkFull a (.orElse p₁ p₂) s stdin pub).1 = (ok₁ && ok₂) := by
+    · have hcf1 : (checkFull a (.orElse p₁ p₂) s stdin pub).1
+                = (ok₁ && ok₂ && touchesOnlyPublic p₁) := by
         simp only [checkFull, h1, he1, h2]
       rw [hcf1]; intro hok
-      rw [Bool.and_eq_true] at hok
-      refine SafePipeline.orElse a p₁ p₂ s stdin (H1safe hok.1) ?_
-      rw [he1]; exact H2safe hok.2
+      simp only [Bool.and_eq_true] at hok
+      obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+      refine SafePipeline.orElse a p₁ p₂ s stdin h_g (H1safe h_ok1) ?_
+      rw [he1]; exact H2safe h_ok2
     · simp only [checkFull, evalPipelineFull, h1, he1, h2]
       cases ec₁ with
       | success => exact H1pub

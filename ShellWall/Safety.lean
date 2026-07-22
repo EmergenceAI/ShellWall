@@ -135,15 +135,23 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Prop w
       SafePipeline a (.seq p₁ p₂) s stdin
 
   /-- `a && b`: BOTH branches required safe (v1 conservatism), `b` in the post-`a`
-  state with fresh `.empty` stdin. -/
-  | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) :
+  state with fresh `.empty` stdin. PUBLIC-GUARD requirement (`hguard`): the guard
+  `a` must touch only public paths, so its exit code — which decides whether `b`
+  runs — is determined solely by public state. Without this the exit code is an
+  implicit channel: private data could gate the public write (Prompt-13
+  counterexample). Closing it is what makes noninterference true (Prompt 15). -/
+  | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content)
+      (hguard : touchesOnlyPublic p₁ = true) :
       SafePipeline a p₁ s stdin →
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
       SafePipeline a (.andThen p₁ p₂) s stdin
 
   /-- `a || b`: BOTH branches required safe (v1 conservatism), `b` in the post-`a`
-  state with fresh `.empty` stdin. -/
-  | orElse (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) :
+  state with fresh `.empty` stdin. PUBLIC-GUARD requirement (`hguard`), same as
+  `andThen`: the guard `a` must touch only public paths so its exit code is
+  public-determined, closing the implicit-flow channel through `||`. -/
+  | orElse (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content)
+      (hguard : touchesOnlyPublic p₁ = true) :
       SafePipeline a p₁ s stdin →
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
       SafePipeline a (.orElse p₁ p₂) s stdin

@@ -307,6 +307,34 @@ def isPublicPath (p : Path) : Bool :=
   | .privateRW => false
   | .privateRO => false
 
+/-- Whether a single command touches only public paths: a path-carrying command
+(`read`/`write`/`rm`/`mkdir`) must be on a public path; stream ops carry no path
+and are unconstrained. -/
+def cmdTouchesOnlyPublic : Cmd → Bool
+  | .read p    => isPublicPath p
+  | .write p _ => isPublicPath p
+  | .rm p      => isPublicPath p
+  | .mkdir p   => isPublicPath p
+  | .grep _    => true
+  | .sort      => true
+  | .uniq      => true
+  | .wc        => true
+
+/-- `touchesOnlyPublic p` holds iff every path mentioned by any command in `p` is
+public. Used to gate conditional guards (`&&`/`||`): if a guard touches only public
+paths, its execution — hence its exit code — is determined solely by the public
+part of the state, so two states agreeing on all public paths run (or skip) the
+body identically. That closes the implicit-flow channel the Prompt-13
+counterexample exploited. Conservative (it rejects any conditional whose guard
+reads/writes/removes a private path) but sound — the standard "public
+program-counter" discipline from information-flow security. -/
+def touchesOnlyPublic : Pipeline → Bool
+  | .single c    => cmdTouchesOnlyPublic c
+  | .pipe a b    => touchesOnlyPublic a && touchesOnlyPublic b
+  | .seq a b     => touchesOnlyPublic a && touchesOnlyPublic b
+  | .andThen a b => touchesOnlyPublic a && touchesOnlyPublic b
+  | .orElse a b  => touchesOnlyPublic a && touchesOnlyPublic b
+
 /-- Restrict a filesystem to its public paths (private paths become `none`). The
 observable projection over which `shellwall_noninterference` is stated. -/
 def publicProjection (s : FileState) : FileState :=

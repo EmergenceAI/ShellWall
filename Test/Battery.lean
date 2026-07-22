@@ -85,11 +85,12 @@ namespace ShellWall.Test
   (.pipe (.single (.read "/shared/nope")) (.single (.write pub .overwrite))) s0 == false
 
 /-! ## Conditional C-cases (Prompt 09): `(cond) | write`, exercising the
-exit-aware output flag. -/
+exit-aware output flag AND (Prompt 14) the public-guard requirement: a conditional
+whose guard touches a private path is rejected (`touchesOnlyPublic`). -/
 
--- C1: `(cat gone && cat shared) | > public/out` → reject. Stage 1 FAILS, so the
--- conditional's output is stage 1's (non-public `.empty`) — sound reject. This is
--- the case the pre-fix (buggy) decider wrongly ACCEPTED.
+-- C1: `(cat gone && cat shared) | > public/out` → reject. The guard `cat gone`
+-- reads a PRIVATE path → touchesOnlyPublic fails (Prompt 14). (Also rejected
+-- pre-Prompt-14 via the exit-aware flag, since stage 1 fails → non-public output.)
 #guard checkSafe alice (.pipe (.andThen rdG rdS) wr) s0 == false
 
 -- C2: `(cat shared && cat shared) | > public/out` → permit (stage 1 succeeds →
@@ -99,16 +100,26 @@ exit-aware output flag. -/
 -- C3: `(cat shared && cat notes) | > public/out` → reject (stage 2 runs → private).
 #guard checkSafe alice (.pipe (.andThen rdS rdP) wr) s0 == false
 
--- C4: `(cat gone || cat shared) | > public/out` → permit (stage 1 fails → stage 2
--- runs → public).
-#guard checkSafe alice (.pipe (.orElse rdG rdS) wr) s0 == true
+-- C4: `(cat gone || cat shared) | > public/out` → REJECT (Prompt 14 FLIP: was
+-- permit). The guard `cat gone` reads a PRIVATE path, so the `||` could branch on
+-- private state (does the file exist?) → touchesOnlyPublic fails on the guard.
+-- This flip closes a real implicit-flow channel.
+#guard checkSafe alice (.pipe (.orElse rdG rdS) wr) s0 == false
 
 -- C5: `(cat shared || cat notes) | > public/out` → permit (stage 1 succeeds →
 -- output is stage 1's, public).
 #guard checkSafe alice (.pipe (.orElse rdS rdP) wr) s0 == true
 
--- C6: `(cat notes || cat shared) | > public/out` → reject (stage 1 succeeds →
--- output is stage 1's, private).
+-- C6: `(cat notes || cat shared) | > public/out` → reject. The guard `cat notes`
+-- reads a PRIVATE path → touchesOnlyPublic fails (Prompt 14). (Also rejected
+-- pre-Prompt-14: guard succeeds → stage 1's private output feeds the public write.)
 #guard checkSafe alice (.pipe (.orElse rdP rdS) wr) s0 == false
+
+-- Prompt-13 implicit-flow leak, now REJECTED by the Prompt-14 public-guard rule:
+-- `(cat notes | grep SECRET) && (cat shared > public/out)` — the guard reads the
+-- private /home/alice/notes.txt, so touchesOnlyPublic fails and checkSafe rejects.
+-- Permanent regression witness that the exit-code implicit flow stays closed.
+#guard checkSafe alice
+  (.andThen (.pipe rdP (.single (.grep "SECRET"))) (.pipe rdS wr)) s0 == false
 
 end ShellWall.Test
