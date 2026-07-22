@@ -156,13 +156,29 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Prop w
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
       SafePipeline a (.orElse p₁ p₂) s stdin
 
-/-- NONINTERFERENCE (the top-level security guarantee, proof deferred): if two
-filesystems agree on all public paths and the same pipeline is safe in both, then
-running it in either yields the same public projection — a safe pipeline cannot
-leak private data into public paths. Top-level pipelines start from `.empty` stdin.
+/-- NONINTERFERENCE (the top-level security guarantee): if two filesystems agree on
+all public paths and the same pipeline is safe in both, then running it in either
+yields the same public projection — a safe pipeline cannot leak private data into
+public paths. Top-level pipelines start from `.empty` stdin.
 
 SCOPE: over the FILESYSTEM public projection only; does NOT cover stdout — see the
-`THREAT MODEL — stdout (v1)` note at the top of `Semantics.lean`. -/
+`THREAT MODEL — stdout (v1)` note at the top of `Semantics.lean`.
+
+⚠ KNOWN FALSE AS STATED (Prompt-15 finding). This statement — over ALL
+`SafePipeline`-accepted pipelines — is REFUTED by `noninterference_still_false` in
+`Test/ExplicitFlow.lean` (a machine-checked counterexample, no `sorry`):
+`cat /private/secret > /public/out` is `SafePipeline`-accepted whenever `secret`'s
+value happens to coincide with some public path's content in each state, yet it
+copies private data to a public path. Root cause: `SafeCmd.write_public_ok`'s
+`IsPublic s stdin` is a PER-STATE predicate — "the value is public in s" does not
+imply "the value is the same across agreeing states". The DECIDER `checkSafe`
+REJECTS this leak (its provenance walk flags reads of private paths), so the
+checkSafe-accepted fragment is strictly smaller and plausibly satisfies
+noninterference. Making this theorem true requires a HUMAN SPEC DECISION: either
+strengthen `write_public_ok` to a provenance-based obligation (align `SafePipeline`
+with `checkFull`), or re-target the theorem to `checkSafe a p .empty = true`. The
+`sorry` below therefore stands on a statement known to be false as written; do NOT
+build on it until the spec decision is made. -/
 theorem shellwall_noninterference
     (a : Owner) (p : Pipeline) (s₁ s₂ : FileState)
     (hagree : agreeOnPublicPaths s₁ s₂)

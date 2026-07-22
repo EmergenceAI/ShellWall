@@ -3,3 +3,5 @@
 import Test.Battery
 -- The Prompt-13 implicit-flow refutation of `shellwall_noninterference`.
 import Test.ImplicitFlow
+-- The Prompt-15 finding: noninterference is STILL false (per-state IsPublic leak).
+import Test.ExplicitFlow
