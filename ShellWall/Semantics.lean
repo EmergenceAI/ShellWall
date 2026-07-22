@@ -346,3 +346,52 @@ def publicProjection (s : FileState) : FileState :=
 in proofs. -/
 def agreeOnPublicPaths (s₁ s₂ : FileState) : Prop :=
   ∀ p : Path, isPublicPath p = true → s₁ p = s₂ p
+
+/-! ## Forward provenance
+
+`cmdOutIsPublic`/`provOut` compute, FORWARD along execution, whether a command's or
+pipeline's stdout is "public-provenance": built only from reads of PUBLIC paths and
+public-preserving transforms. This is the notion that makes the safety spec
+relationally sound (Prompt 16): unlike the per-state, value-based `IsPublic` (which
+a private value coinciding with a public one satisfies), provenance is pinned to the
+paths READ, so agreeing states yield the same value. The DECIDER already used this;
+`SafeCmd`/`SafePipeline` now consume it too, and it is defined here so both can. -/
+
+/-- Whether a command's stdout is public-PROVENANCE, given the state it runs in and
+whether its stdin is public-provenance. Reading a PRIVATE path yields `false` even
+if the bytes coincide with a public file's — the fix for the Prompt-15
+counterexample. Stream transforms preserve the flag; `wc`/writes/`rm`/`mkdir` are
+never public. -/
+def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
+  match c with
+  -- a read is public-provenance iff the path is PUBLIC and present (a missing read
+  -- yields `.empty`, not certified public). Reading a private path ⇒ false.
+  | .read p => isPublicPath p && (s p).isSome
+  | .grep _ => stdinPub   -- public-preserving transform
+  | .sort   => stdinPub
+  | .uniq   => stdinPub
+  | .wc     => false      -- aggregation: never public (disclosure-leak exclusion)
+  | .write _ _ => false   -- emits `.empty`
+  | .rm _      => false
+  | .mkdir _   => false
+
+/-- Whether a whole pipeline's stdout is public-provenance, given whether its stdin
+is. Threads FORWARD exactly as `evalPipelineFull` runs (and as `checkFull`'s second
+component computes — `provOut_eq_checkFull_snd` in `Decide` proves they coincide).
+`;`/`&&`/`||` give the second stage fresh non-public (`false`) stdin; `&&`/`||` are
+exit-aware. -/
+def provOut : Pipeline → FileState → Content → Bool → Bool
+  | .single c, s, _stdin, pub => cmdOutIsPublic c s pub
+  | .pipe p₁ p₂, s, stdin, pub =>
+      provOut p₂ (evalPipelineFull p₁ s stdin).1 (evalPipelineFull p₁ s stdin).2.1
+        (provOut p₁ s stdin pub)
+  | .seq p₁ p₂, s, stdin, _pub =>
+      provOut p₂ (evalPipelineFull p₁ s stdin).1 .empty false
+  | .andThen p₁ p₂, s, stdin, pub =>
+      match (evalPipelineFull p₁ s stdin).2.2 with
+      | .success   => provOut p₂ (evalPipelineFull p₁ s stdin).1 .empty false
+      | .failure _ => provOut p₁ s stdin pub
+  | .orElse p₁ p₂, s, stdin, pub =>
+      match (evalPipelineFull p₁ s stdin).2.2 with
+      | .success   => provOut p₁ s stdin pub
+      | .failure _ => provOut p₂ (evalPipelineFull p₁ s stdin).1 .empty false

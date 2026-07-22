@@ -10,53 +10,12 @@ UNDER-approximation (rejecting writes a delegate is entitled to). Sound in that
 direction, but must be revisited. -/
 def canWriteB (a : Owner) (p : Path) : Bool := decide (ownerOf p = a)
 
-/-! ## Deciding public-ness of content
-
-WHY THERE IS NO `isPublicB : FileState → Content → Bool`.
-
-The subprompt suggested deciding public-ness with a recursive
-`isPublicB : FileState → Content → Bool` mirroring `IsPublic`'s constructors.
-That signature is NOT implementable, for two independent reasons:
-
-1. `of_public_read` needs `∃ p, isPublicPath p ∧ s p = some c`. `FileState` is a
-   FUNCTION `Path → Option Content` and `Path` (`System.FilePath`) is infinite, so
-   this existential cannot be decided by search.
-2. `of_filter`/`of_sort` would require INVERTING `grepFilter`/`sortContent`: given
-   an opaque `c`, decide whether `∃ pat c', c = grepFilter pat c'` with `c'`
-   public. `Content` records no provenance, and `pat` ranges over all `String`.
-
-`IsPublic` is not structurally recursive on `Content` -- it is an inductive
-*derivation* relation, and a `Content` value carries no trace of its derivation.
-
-WHAT IS DONE INSTEAD: public-ness is tracked as PROVENANCE along the same
-lockstep walk that threads state and stdin. At each stage we know how the content
-was produced, so we never have to invert anything. `cmdOutIsPublic` below is a
-transcription of `IsPublic`'s constructors read FORWARDS (producer to product)
-rather than backwards.
-RESOLVED (was TODO 5b): that this provenance flag implies `IsPublic` — i.e. it is a
-sound under-approximation — is exactly the second conjunct of `checkFull_sound`. -/
-
-/-- Whether a command's stdout is provably public, given the state it runs in and
-whether its stdin is provably public. Each case reads an `IsPublic` constructor
-FORWARDS (or returns `false` where no constructor applies). Proved a sound
-under-approximation by `checkFull_sound`'s output-public conjunct. -/
-def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
-  match c with
-  -- of_public_read needs BOTH a public class AND `s p = some c`. A read of a
-  -- MISSING public path yields `.empty`, which no constructor certifies, hence
-  -- the `isSome` conjunct.
-  | .read p => isPublicPath p && (s p).isSome
-  | .grep _ => stdinPub   -- of_filter
-  | .sort   => stdinPub   -- of_sort
-  -- of_uniq: uniq output is public iff its input is, same safe class as grep/sort.
-  | .uniq   => stdinPub
-  -- `wc` is aggregation/summarisation -- the DELIBERATE omission from `IsPublic`
-  -- that guards against counting leaks. Never public.
-  | .wc     => false
-  -- these emit `.empty`, which no constructor certifies as public
-  | .write _ _ => false
-  | .rm _      => false
-  | .mkdir _   => false
+-- Provenance is tracked FORWARD by `cmdOutIsPublic`/`provOut` (in `Semantics`),
+-- shared by both the decider here and `SafeCmd`/`SafePipeline`. There is
+-- deliberately no `isPublicB : FileState → Content → Bool` (a backward, value-based
+-- decision): `IsPublic` is a derivation relation, `Content` carries no trace of its
+-- derivation, and — per the Prompt-15 counterexample — value-based public-ness is
+-- relationally unsound anyway. Forward provenance is the right notion.
 
 /-! ## Deciding safety -/
 
@@ -162,183 +121,148 @@ theorem canWriteB_sound {a : Owner} {p : Path} : canWriteB a p = true → CanWri
   intro h
   exact CanWrite.self a p (of_decide_eq_true h)
 
-/-- `isPublicPath` is sound for `of_public_read`: if it returns `true`, the path is
-classified `publicRO` or `publicRW`. -/
-theorem isPublicPath_sound {p : Path} :
-    isPublicPath p = true → classify p = .publicRO ∨ classify p = .publicRW := by
-  intro h
-  unfold isPublicPath at h
-  split at h
-  · rename_i hc; exact Or.inr hc
-  · rename_i hc; exact Or.inl hc
-  · simp at h
-  · simp at h
+/-- The soundness bridge, by induction mirroring the decider's walk. Two facts are
+threaded together (the second feeds the first in `pipe`):
+- (safety) the safety flag implies a `SafePipeline` derivation, THREADING the same
+  provenance flag `pub` that the spec now consumes;
+- (prov)   the decider's output flag equals `provOut` — so the flag `checkFull`
+  threads into the next stage is exactly the one `SafePipeline` expects.
 
-/-- `grep`'s output state is unchanged and its stdout is exactly
-`grepFilter pat stdin` — despite `evalCmd`'s inner empty-match returning a literal
-`.empty` in one branch (which equals `grepFilter pat stdin` there anyway). -/
-theorem grep_out (pat : String) (s : FileState) (stdin : Content) :
-    (evalCmd (.grep pat) s stdin).1 = s ∧
-    (evalCmd (.grep pat) s stdin).2.1 = grepFilter pat stdin := by
-  simp only [evalCmd]
-  split <;> simp_all
-
-/-- The load-bearing soundness bridge, by induction mirroring the decider's own
-walk. Two invariants are threaded together (the second feeds the first in `pipe`):
-- (safety) the safety flag implies a `SafePipeline` derivation;
-- (out-pub) the output-public flag implies the ACTUAL threaded output content
-  (per `evalPipelineFull`) is `IsPublic`.
-
-The out-pub conjunct is where the exit-aware `andThen`/`orElse` flag pays off: it
-branches on `ec₁` in step with `evalPipelineFull`, so each branch discharges from
-the corresponding IH. -/
+Simpler than the pre-Prompt-16 version: the write obligation is now the checkable
+`pub = true` (no `IsPublic` reconstruction), because spec and decider share the same
+forward-provenance notion. -/
 theorem checkFull_sound (a : Owner) (p : Pipeline) :
     ∀ (s : FileState) (stdin : Content) (pub : Bool),
-      (pub = true → IsPublic s stdin) →
-      ((checkFull a p s stdin pub).1 = true → SafePipeline a p s stdin) ∧
-      ((checkFull a p s stdin pub).2 = true →
-        IsPublic (evalPipelineFull p s stdin).1 (evalPipelineFull p s stdin).2.1) := by
+      ((checkFull a p s stdin pub).1 = true → SafePipeline a p s stdin pub) ∧
+      ((checkFull a p s stdin pub).2 = provOut p s stdin pub) := by
   induction p with
   | single c =>
-    intro s stdin pub hpub
-    constructor
+    intro s stdin pub
+    refine ⟨?_, ?_⟩
     · intro hok
       apply SafePipeline.single
       simp only [checkFull] at hok
       cases c with
-      | read q => exact SafeCmd.read_ok a q s stdin
-      | grep pat => exact SafeCmd.grep_ok a pat s stdin
-      | sort => exact SafeCmd.sort_ok a s stdin
-      | uniq => exact SafeCmd.uniq_ok a s stdin
-      | wc => exact SafeCmd.wc_ok a s stdin
+      | read q => exact SafeCmd.read_ok a q s stdin pub
+      | grep pat => exact SafeCmd.grep_ok a pat s stdin pub
+      | sort => exact SafeCmd.sort_ok a s stdin pub
+      | uniq => exact SafeCmd.uniq_ok a s stdin pub
+      | wc => exact SafeCmd.wc_ok a s stdin pub
       | write q mode =>
         simp only [checkCmd] at hok
         split at hok
         · rename_i hcls
           rw [Bool.and_eq_true] at hok
-          exact SafeCmd.write_public_ok a q mode s stdin hcls (canWriteB_sound hok.1) (hpub hok.2)
+          exact SafeCmd.write_public_ok a q mode s stdin pub hcls (canWriteB_sound hok.1) hok.2
         · rename_i hcls
-          exact SafeCmd.write_private_ok a q mode s stdin hcls (canWriteB_sound hok)
+          exact SafeCmd.write_private_ok a q mode s stdin pub hcls (canWriteB_sound hok)
         · simp at hok
         · simp at hok
-      | rm q => simp only [checkCmd] at hok; exact SafeCmd.rm_ok a q s stdin (canWriteB_sound hok)
-      | mkdir q => simp only [checkCmd] at hok; exact SafeCmd.mkdir_ok a q s stdin (canWriteB_sound hok)
-    · intro hpb
-      simp only [checkFull] at hpb
-      simp only [evalPipelineFull]
-      cases c with
-      | read q =>
-        simp only [cmdOutIsPublic] at hpb
-        rw [Bool.and_eq_true] at hpb
-        cases hsp : s q with
-        | none => rw [hsp] at hpb; simp at hpb
-        | some cc =>
-          simp only [evalCmd, hsp]
-          rcases isPublicPath_sound hpb.1 with h | h
-          · exact IsPublic.of_public_read s q cc (Or.inl h) hsp
-          · exact IsPublic.of_public_read s q cc (Or.inr h) hsp
-      | grep pat =>
-        simp only [cmdOutIsPublic] at hpb
-        obtain ⟨hst, hout⟩ := grep_out pat s stdin
-        rw [hst, hout]
-        exact IsPublic.of_filter s stdin pat (hpub hpb)
-      | sort =>
-        simp only [cmdOutIsPublic] at hpb
-        simp only [evalCmd]
-        exact IsPublic.of_sort s stdin (hpub hpb)
-      | uniq =>
-        simp only [cmdOutIsPublic] at hpb
-        simp only [evalCmd]
-        exact IsPublic.of_uniq s stdin (hpub hpb)
-      | wc => simp [cmdOutIsPublic] at hpb
-      | write q mode => simp [cmdOutIsPublic] at hpb
-      | rm q => simp [cmdOutIsPublic] at hpb
-      | mkdir q => simp [cmdOutIsPublic] at hpb
+      | rm q => simp only [checkCmd] at hok; exact SafeCmd.rm_ok a q s stdin pub (canWriteB_sound hok)
+      | mkdir q => simp only [checkCmd] at hok; exact SafeCmd.mkdir_ok a q s stdin pub (canWriteB_sound hok)
+    · rfl
   | pipe p₁ p₂ ih₁ ih₂ =>
-    intro s stdin pub hpub
+    intro s stdin pub
     rcases h1 : checkFull a p₁ s stdin pub with ⟨ok₁, pub₁⟩
     rcases he1 : evalPipelineFull p₁ s stdin with ⟨s₁, out₁, ec₁⟩
     rcases h2 : checkFull a p₂ s₁ out₁ pub₁ with ⟨ok₂, pub₂⟩
-    obtain ⟨H1safe, H1pub⟩ := ih₁ s stdin pub hpub
-    rw [h1] at H1safe H1pub
-    rw [he1] at H1pub
-    obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ out₁ pub₁ H1pub
-    rw [h2] at H2safe H2pub
+    obtain ⟨H1safe, H1eq⟩ := ih₁ s stdin pub
+    rw [h1] at H1safe H1eq
+    obtain ⟨H2safe, H2eq⟩ := ih₂ s₁ out₁ pub₁
+    rw [h2] at H2safe H2eq
     have hcf : checkFull a (.pipe p₁ p₂) s stdin pub = (ok₁ && ok₂, pub₂) := by
       simp only [checkFull, h1, he1, h2]
-    have hef : evalPipelineFull (.pipe p₁ p₂) s stdin = evalPipelineFull p₂ s₁ out₁ := by
-      simp only [evalPipelineFull, he1]
-    constructor
-    · rw [hcf]; intro hok
+    refine ⟨?_, ?_⟩
+    · simp only [hcf]; intro hok
       rw [Bool.and_eq_true] at hok
-      refine SafePipeline.pipe a p₁ p₂ s stdin (H1safe hok.1) ?_
-      rw [he1]; exact H2safe hok.2
-    · rw [hcf, hef]; exact H2pub
+      refine SafePipeline.pipe a p₁ p₂ s stdin pub (H1safe hok.1) ?_
+      rw [he1, ← H1eq]; exact H2safe hok.2
+    · -- restate the flag equations at their reduced (defeq) types so `simp` matches
+      have e1 : pub₁ = provOut p₁ s stdin pub := H1eq
+      have e2 : pub₂ = provOut p₂ s₁ out₁ pub₁ := H2eq
+      simp only [hcf, e2, provOut, he1, e1]
   | seq p₁ p₂ ih₁ ih₂ =>
-    intro s stdin pub hpub
+    intro s stdin pub
     rcases h1 : checkFull a p₁ s stdin pub with ⟨ok₁, pub₁⟩
     rcases he1 : evalPipelineFull p₁ s stdin with ⟨s₁, out₁, ec₁⟩
     rcases h2 : checkFull a p₂ s₁ .empty false with ⟨ok₂, pub₂⟩
-    obtain ⟨H1safe, _⟩ := ih₁ s stdin pub hpub
+    obtain ⟨H1safe, _⟩ := ih₁ s stdin pub
     rw [h1] at H1safe
-    obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ .empty false (by intro hc; simp at hc)
-    rw [h2] at H2safe H2pub
+    obtain ⟨H2safe, H2eq⟩ := ih₂ s₁ .empty false
+    rw [h2] at H2safe H2eq
     have hcf : checkFull a (.seq p₁ p₂) s stdin pub = (ok₁ && ok₂, pub₂) := by
       simp only [checkFull, h1, he1, h2]
-    have hef : evalPipelineFull (.seq p₁ p₂) s stdin = evalPipelineFull p₂ s₁ .empty := by
-      simp only [evalPipelineFull, he1]
-    constructor
-    · rw [hcf]; intro hok
+    refine ⟨?_, ?_⟩
+    · simp only [hcf]; intro hok
       rw [Bool.and_eq_true] at hok
-      refine SafePipeline.seq a p₁ p₂ s stdin (H1safe hok.1) ?_
+      refine SafePipeline.seq a p₁ p₂ s stdin pub (H1safe hok.1) ?_
       rw [he1]; exact H2safe hok.2
-    · rw [hcf, hef]; exact H2pub
+    · simp only [hcf, H2eq, provOut, he1]
   | andThen p₁ p₂ ih₁ ih₂ =>
-    intro s stdin pub hpub
+    intro s stdin pub
     rcases h1 : checkFull a p₁ s stdin pub with ⟨ok₁, pub₁⟩
     rcases he1 : evalPipelineFull p₁ s stdin with ⟨s₁, out₁, ec₁⟩
     rcases h2 : checkFull a p₂ s₁ .empty false with ⟨ok₂, pub₂⟩
-    obtain ⟨H1safe, H1pub⟩ := ih₁ s stdin pub hpub
-    rw [h1] at H1safe H1pub
-    rw [he1] at H1pub
-    obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ .empty false (by intro hc; simp at hc)
-    rw [h2] at H2safe H2pub
-    constructor
-    · have hcf1 : (checkFull a (.andThen p₁ p₂) s stdin pub).1
-                = (ok₁ && ok₂ && touchesOnlyPublic p₁) := by
+    obtain ⟨H1safe, H1eq⟩ := ih₁ s stdin pub
+    rw [h1] at H1safe H1eq
+    obtain ⟨H2safe, H2eq⟩ := ih₂ s₁ .empty false
+    rw [h2] at H2safe H2eq
+    -- case on stage-1 exit so the exit-aware `.2` match resolves concretely
+    cases ec₁ with
+    | success =>
+      have hcf : checkFull a (.andThen p₁ p₂) s stdin pub
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₂) := by
         simp only [checkFull, h1, he1, h2]
-      rw [hcf1]; intro hok
-      simp only [Bool.and_eq_true] at hok
-      obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-      refine SafePipeline.andThen a p₁ p₂ s stdin h_g (H1safe h_ok1) ?_
-      rw [he1]; exact H2safe h_ok2
-    · simp only [checkFull, evalPipelineFull, h1, he1, h2]
-      cases ec₁ with
-      | success => exact H2pub
-      | failure n => exact H1pub
+      refine ⟨?_, ?_⟩
+      · simp only [hcf]; intro hok
+        simp only [Bool.and_eq_true] at hok
+        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        rw [he1]; exact H2safe h_ok2
+      · simp only [hcf, provOut, he1]; exact H2eq
+    | failure n =>
+      have hcf : checkFull a (.andThen p₁ p₂) s stdin pub
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₁) := by
+        simp only [checkFull, h1, he1, h2]
+      refine ⟨?_, ?_⟩
+      · simp only [hcf]; intro hok
+        simp only [Bool.and_eq_true] at hok
+        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        rw [he1]; exact H2safe h_ok2
+      · simp only [hcf, provOut, he1]; exact H1eq
   | orElse p₁ p₂ ih₁ ih₂ =>
-    intro s stdin pub hpub
+    intro s stdin pub
     rcases h1 : checkFull a p₁ s stdin pub with ⟨ok₁, pub₁⟩
     rcases he1 : evalPipelineFull p₁ s stdin with ⟨s₁, out₁, ec₁⟩
     rcases h2 : checkFull a p₂ s₁ .empty false with ⟨ok₂, pub₂⟩
-    obtain ⟨H1safe, H1pub⟩ := ih₁ s stdin pub hpub
-    rw [h1] at H1safe H1pub
-    rw [he1] at H1pub
-    obtain ⟨H2safe, H2pub⟩ := ih₂ s₁ .empty false (by intro hc; simp at hc)
-    rw [h2] at H2safe H2pub
-    constructor
-    · have hcf1 : (checkFull a (.orElse p₁ p₂) s stdin pub).1
-                = (ok₁ && ok₂ && touchesOnlyPublic p₁) := by
+    obtain ⟨H1safe, H1eq⟩ := ih₁ s stdin pub
+    rw [h1] at H1safe H1eq
+    obtain ⟨H2safe, H2eq⟩ := ih₂ s₁ .empty false
+    rw [h2] at H2safe H2eq
+    cases ec₁ with
+    | success =>
+      have hcf : checkFull a (.orElse p₁ p₂) s stdin pub
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₁) := by
         simp only [checkFull, h1, he1, h2]
-      rw [hcf1]; intro hok
-      simp only [Bool.and_eq_true] at hok
-      obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-      refine SafePipeline.orElse a p₁ p₂ s stdin h_g (H1safe h_ok1) ?_
-      rw [he1]; exact H2safe h_ok2
-    · simp only [checkFull, evalPipelineFull, h1, he1, h2]
-      cases ec₁ with
-      | success => exact H1pub
-      | failure n => exact H2pub
+      refine ⟨?_, ?_⟩
+      · simp only [hcf]; intro hok
+        simp only [Bool.and_eq_true] at hok
+        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        rw [he1]; exact H2safe h_ok2
+      · simp only [hcf, provOut, he1]; exact H1eq
+    | failure n =>
+      have hcf : checkFull a (.orElse p₁ p₂) s stdin pub
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₂) := by
+        simp only [checkFull, h1, he1, h2]
+      refine ⟨?_, ?_⟩
+      · simp only [hcf]; intro hok
+        simp only [Bool.and_eq_true] at hok
+        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
+        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        rw [he1]; exact H2safe h_ok2
+      · simp only [hcf, provOut, he1]; exact H2eq
 
 /-- SOUNDNESS of the gate: if `checkSafe` permits, the pipeline really is
 `SafePipeline` (indexed by `.empty` top-level stdin, matching how `checkSafe` and
@@ -348,7 +272,7 @@ Completeness (`SafePipeline → checkSafe = true`) is intentionally NOT claimed 
 is unattainable in general — v1 may reject some genuinely-safe pipelines (an
 accepted, deliberate limitation). -/
 theorem checkSafe_sound (a : Owner) (p : Pipeline) (s : FileState) :
-    checkSafe a p s = true → SafePipeline a p s .empty := by
+    checkSafe a p s = true → SafePipeline a p s .empty false := by
   intro h
-  -- top-level stdin is `.empty` with flag `false`, so the input hypothesis is vacuous
-  exact (checkFull_sound a p s .empty false (by intro hc; simp at hc)).1 h
+  -- top-level stdin is `.empty` with provenance flag `false`
+  exact (checkFull_sound a p s .empty false).1 h

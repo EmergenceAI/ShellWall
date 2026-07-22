@@ -1,7 +1,13 @@
 import ShellWall.Semantics
 
 /-- `IsPublic s c`: content `c` is derivable solely from public data in state `s`.
-The judgment that gates public writes (`SafeCmd.write_public_ok`).
+
+NOTE (Prompt 16): this is NO LONGER the write obligation — `write_public_ok` now
+requires public PROVENANCE (`pub = true`), because a per-state `IsPublic` value is
+relationally unsound (a private value coinciding with a public one satisfies it; see
+`Test/ExplicitFlow.lean`). `IsPublic` is retained as a reusable building block for
+the noninterference proof (`isPublic_agrees`: public content transports across
+agreeing states), not as a safety gate.
 
 ⚠ DELIBERATE OMISSION — LOAD-BEARING (design §3.2/§7.3): there is NO constructor
 deriving `IsPublic` from aggregation or summarization of private content (counts,
@@ -41,67 +47,72 @@ inductive CanWrite : Owner → Path → Prop where
   delegation constructors are deferred to v2. -/
   | self (a : Owner) (p : Path) (h : ownerOf p = a) : CanWrite a p
 
-/-- `SafeCmd a cmd s stdin`: owner `a` may execute `cmd` in state `s` with the
-given `stdin` content flowing in. The `stdin` index is threaded but UNUSED by every
-rule except `write_public_ok` — only a public write's safety depends on the content
-being written.
+/-- `SafeCmd a cmd s stdin pub`: owner `a` may execute `cmd` in state `s` with the
+given `stdin` content flowing in, where `pub : Bool` records whether that stdin is
+public-PROVENANCE (produced by reads of public paths / public-preserving transforms
+— see `provOut`). Only `write_public_ok` consumes `pub`.
 
-The four stream-transform commands (grep/sort/uniq/wc) touch no path directly (all
-restriction is at the read/write endpoints), so they are unconditionally safe *as
-commands*; their safety relevance is entirely in how they transform content, which
-`IsPublic`'s transform constructors handle. -/
-inductive SafeCmd : Owner → Cmd → FileState → Content → Prop where
+PROMPT-16 FIX: `write_public_ok` now requires `pub = true` (provenance) rather than
+`IsPublic s stdin` (value). The value-based obligation was relationally UNSOUND: a
+private value coinciding with a public path's bytes satisfied `IsPublic` in each
+state separately, yet differed across agreeing states (the Prompt-15 counterexample
+`cat /private/secret > public`). Provenance is pinned to the paths READ, so agreeing
+states force the same value. This aligns the spec with the already-correct decider
+(`checkCmd`/`cmdOutIsPublic`). `IsPublic` is retained (see `isPublic_agrees`) but is
+no longer the write obligation.
+
+The four stream-transform commands (grep/sort/uniq/wc) touch no path directly, so
+they are unconditionally safe *as commands*; their provenance effect is in
+`cmdOutIsPublic`, not here. -/
+inductive SafeCmd : Owner → Cmd → FileState → Content → Bool → Prop where
   /-- Reading is UNCONDITIONALLY safe at the command layer. Confidentiality is
-  enforced at the write boundary (via `IsPublic`), not the read boundary — reading
-  private data is never itself the violation, only publishing it is. -/
-  | read_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content) :
-      SafeCmd a (.read p) s stdin
+  enforced at the write boundary, not the read boundary — reading private data is
+  never itself the violation, only publishing it is. -/
+  | read_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content) (pub : Bool) :
+      SafeCmd a (.read p) s stdin pub
 
   /-- Writing to a public (`publicRW`) path is safe iff the writer owns it AND the
-  actual `stdin` content flowing in is `IsPublic`. The obligation is on the ACTUAL
-  `stdin` (not an arbitrary witness): this is the Prompt 06 soundness fix — an
-  unconstrained content witness let the rule fire with unrelated public content,
-  which made `shellwall_noninterference` false. -/
+  content flowing in is public-PROVENANCE (`pub = true`). See the type note: this is
+  the Prompt-16 relational-soundness fix (provenance, not per-state value). -/
   | write_public_ok (a : Owner) (p : Path) (mode : WriteMode) (s : FileState)
-      (stdin : Content)
+      (stdin : Content) (pub : Bool)
       (hclass : classify p = .publicRW)
       (hown : CanWrite a p)
-      (hpub : IsPublic s stdin) :          -- ← the ACTUAL content written
-      SafeCmd a (.write p mode) s stdin
+      (hpub : pub = true) :                -- ← stdin is public-PROVENANCE
+      SafeCmd a (.write p mode) s stdin pub
 
   /-- Writing to a private (`privateRW`) path is safe iff the writer owns it — no
-  `IsPublic` obligation, because a private path is not a public sink. -/
+  provenance obligation, because a private path is not a public sink. -/
   | write_private_ok (a : Owner) (p : Path) (mode : WriteMode) (s : FileState)
-      (stdin : Content)
+      (stdin : Content) (pub : Bool)
       (hclass : classify p = .privateRW)
       (hown : CanWrite a p) :
-      SafeCmd a (.write p mode) s stdin
+      SafeCmd a (.write p mode) s stdin pub
 
   /-- `grep` is unconditionally safe as a command (a content transform). -/
-  | grep_ok (a : Owner) (pat : String) (s : FileState) (stdin : Content) :
-      SafeCmd a (.grep pat) s stdin
+  | grep_ok (a : Owner) (pat : String) (s : FileState) (stdin : Content) (pub : Bool) :
+      SafeCmd a (.grep pat) s stdin pub
   /-- `sort` is unconditionally safe as a command. -/
-  | sort_ok (a : Owner) (s : FileState) (stdin : Content) : SafeCmd a .sort s stdin
+  | sort_ok (a : Owner) (s : FileState) (stdin : Content) (pub : Bool) : SafeCmd a .sort s stdin pub
   /-- `uniq` is unconditionally safe as a command. -/
-  | uniq_ok (a : Owner) (s : FileState) (stdin : Content) : SafeCmd a .uniq s stdin
+  | uniq_ok (a : Owner) (s : FileState) (stdin : Content) (pub : Bool) : SafeCmd a .uniq s stdin pub
   /-- `wc` is unconditionally safe as a command. (Its output is never certified
-  public — see the `IsPublic` aggregation-omission note.) -/
-  | wc_ok   (a : Owner) (s : FileState) (stdin : Content) : SafeCmd a .wc s stdin
+  public — see `cmdOutIsPublic`.) -/
+  | wc_ok   (a : Owner) (s : FileState) (stdin : Content) (pub : Bool) : SafeCmd a .wc s stdin pub
 
   /-- `rm` is a destructive write and requires write-authority over the target. No
-  `IsPublic` obligation (removing data cannot leak private content to a public
-  sink), but `CanWrite` is mandatory — the most dangerous command in the set, never
-  permitted without ownership. -/
-  | rm_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content)
+  provenance obligation (removing data cannot leak private content to a public
+  sink), but `CanWrite` is mandatory — the most dangerous command in the set. -/
+  | rm_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content) (pub : Bool)
       (hown : CanWrite a p) :
-      SafeCmd a (.rm p) s stdin
+      SafeCmd a (.rm p) s stdin pub
 
   /-- `mkdir` requires write-authority over the target path. NOTE: ownership of the
   *newly created* directory is design open-question 5.4, unresolved here; for v1,
   `CanWrite a p` is the gate. -/
-  | mkdir_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content)
+  | mkdir_ok (a : Owner) (p : Path) (s : FileState) (stdin : Content) (pub : Bool)
       (hown : CanWrite a p) :
-      SafeCmd a (.mkdir p) s stdin
+      SafeCmd a (.mkdir p) s stdin pub
 
 /-- `SafePipeline a pipe s stdin`: owner `a` may execute `pipe` in state `s` with
 the given `stdin`. Each second stage is checked against the state AND stdin it
@@ -115,46 +126,45 @@ v1 does not reason about which branch executes for the SAFETY check (sound but
 conservative — it may reject a pipeline whose unsafe branch never runs). Refining
 this needs ExitCode reasoning and is deferred. (Note: the *decider*'s output-public
 flag IS exit-aware — see `checkFull` — but the safety judgment here is not.) -/
-inductive SafePipeline : Owner → Pipeline → FileState → Content → Prop where
-  /-- A single command is safe iff the command is safe. -/
-  | single (a : Owner) (c : Cmd) (s : FileState) (stdin : Content) :
-      SafeCmd a c s stdin → SafePipeline a (.single c) s stdin
+inductive SafePipeline : Owner → Pipeline → FileState → Content → Bool → Prop where
+  /-- A single command is safe iff the command is safe (same stdin/`pub`). -/
+  | single (a : Owner) (c : Cmd) (s : FileState) (stdin : Content) (pub : Bool) :
+      SafeCmd a c s stdin pub → SafePipeline a (.single c) s stdin pub
 
-  /-- `a | b`: `a` safe, and `b` safe in the state AFTER `a` with `a`'s stdout as
-  its stdin — threaded via `evalPipelineFull` exactly as execution runs. -/
-  | pipe (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) :
-      SafePipeline a p₁ s stdin →
-      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 (evalPipelineFull p₁ s stdin).2.1 →
-      SafePipeline a (.pipe p₁ p₂) s stdin
+  /-- `a | b`: `a` safe, and `b` safe in the state AFTER `a`, on `a`'s stdout as its
+  stdin, with `pub` updated to `a`'s output provenance (`provOut p₁ s stdin pub`) —
+  threaded exactly as `evalPipelineFull` and the decider run. -/
+  | pipe (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool) :
+      SafePipeline a p₁ s stdin pub →
+      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 (evalPipelineFull p₁ s stdin).2.1
+        (provOut p₁ s stdin pub) →
+      SafePipeline a (.pipe p₁ p₂) s stdin pub
 
-  /-- `a ; b`: `a` safe, and `b` safe in the post-`a` state with FRESH `.empty`
-  stdin (`;` is not a pipe). -/
-  | seq (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) :
-      SafePipeline a p₁ s stdin →
-      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
-      SafePipeline a (.seq p₁ p₂) s stdin
+  /-- `a ; b`: `a` safe, and `b` safe in the post-`a` state with FRESH `.empty` stdin
+  and `pub = false` (a fresh terminal-empty stdin is not public-provenance). -/
+  | seq (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool) :
+      SafePipeline a p₁ s stdin pub →
+      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
+      SafePipeline a (.seq p₁ p₂) s stdin pub
 
-  /-- `a && b`: BOTH branches required safe (v1 conservatism), `b` in the post-`a`
-  state with fresh `.empty` stdin. PUBLIC-GUARD requirement (`hguard`): the guard
-  `a` must touch only public paths, so its exit code — which decides whether `b`
-  runs — is determined solely by public state. Without this the exit code is an
-  implicit channel: private data could gate the public write (Prompt-13
-  counterexample). Closing it is what makes noninterference true (Prompt 15). -/
-  | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content)
+  /-- `a && b`: BOTH branches safe (v1 conservatism), `b` in the post-`a` state with
+  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement (`hguard`): the
+  guard `a` must touch only public paths, so its exit code — which decides whether
+  `b` runs — is public-determined (closes the Prompt-13 implicit channel). -/
+  | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool)
       (hguard : touchesOnlyPublic p₁ = true) :
-      SafePipeline a p₁ s stdin →
-      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
-      SafePipeline a (.andThen p₁ p₂) s stdin
+      SafePipeline a p₁ s stdin pub →
+      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
+      SafePipeline a (.andThen p₁ p₂) s stdin pub
 
-  /-- `a || b`: BOTH branches required safe (v1 conservatism), `b` in the post-`a`
-  state with fresh `.empty` stdin. PUBLIC-GUARD requirement (`hguard`), same as
-  `andThen`: the guard `a` must touch only public paths so its exit code is
-  public-determined, closing the implicit-flow channel through `||`. -/
-  | orElse (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content)
+  /-- `a || b`: BOTH branches safe (v1 conservatism), `b` in the post-`a` state with
+  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement (`hguard`), same
+  as `andThen`: the guard's exit code must be public-determined. -/
+  | orElse (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool)
       (hguard : touchesOnlyPublic p₁ = true) :
-      SafePipeline a p₁ s stdin →
-      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty →
-      SafePipeline a (.orElse p₁ p₂) s stdin
+      SafePipeline a p₁ s stdin pub →
+      SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
+      SafePipeline a (.orElse p₁ p₂) s stdin pub
 
 /-- NONINTERFERENCE (the top-level security guarantee): if two filesystems agree on
 all public paths and the same pipeline is safe in both, then running it in either
@@ -164,24 +174,18 @@ public paths. Top-level pipelines start from `.empty` stdin.
 SCOPE: over the FILESYSTEM public projection only; does NOT cover stdout — see the
 `THREAT MODEL — stdout (v1)` note at the top of `Semantics.lean`.
 
-⚠ KNOWN FALSE AS STATED (Prompt-15 finding). This statement — over ALL
-`SafePipeline`-accepted pipelines — is REFUTED by `noninterference_still_false` in
-`Test/ExplicitFlow.lean` (a machine-checked counterexample, no `sorry`):
-`cat /private/secret > /public/out` is `SafePipeline`-accepted whenever `secret`'s
-value happens to coincide with some public path's content in each state, yet it
-copies private data to a public path. Root cause: `SafeCmd.write_public_ok`'s
-`IsPublic s stdin` is a PER-STATE predicate — "the value is public in s" does not
-imply "the value is the same across agreeing states". The DECIDER `checkSafe`
-REJECTS this leak (its provenance walk flags reads of private paths), so the
-checkSafe-accepted fragment is strictly smaller and plausibly satisfies
-noninterference. Making this theorem true requires a HUMAN SPEC DECISION: either
-strengthen `write_public_ok` to a provenance-based obligation (align `SafePipeline`
-with `checkFull`), or re-target the theorem to `checkSafe a p .empty = true`. The
-`sorry` below therefore stands on a statement known to be false as written; do NOT
-build on it until the spec decision is made. -/
+SPEC STRENGTHENED (Prompt 16): the Prompt-15 counterexample
+(`cat /private/secret > /public/out`, accepted when the secret's bytes coincide
+with a public path's) is now REJECTED by `SafePipeline` itself, because
+`write_public_ok` requires public PROVENANCE (`pub = true`, threaded by `provOut`),
+not a per-state `IsPublic` value. With all three known holes closed — unconstrained
+witness (Prompt 07), implicit exit-code flow (Prompt 14), per-state coincidence
+(Prompt 16) — this theorem is now BELIEVED PROVABLE and is the target of Prompt 17.
+Top-level pipelines start from `.empty` stdin with `pub = false` (terminal input is
+not public-provenance). -/
 theorem shellwall_noninterference
     (a : Owner) (p : Pipeline) (s₁ s₂ : FileState)
     (hagree : agreeOnPublicPaths s₁ s₂)
-    (h₁ : SafePipeline a p s₁ .empty) (h₂ : SafePipeline a p s₂ .empty) :
+    (h₁ : SafePipeline a p s₁ .empty false) (h₂ : SafePipeline a p s₂ .empty false) :
     publicProjection (evalPipeline p s₁).1 = publicProjection (evalPipeline p s₂).1 := by
   sorry
