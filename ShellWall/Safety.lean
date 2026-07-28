@@ -148,20 +148,28 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Bool �
       SafePipeline a (.seq p₁ p₂) s stdin pub
 
   /-- `a && b`: BOTH branches safe (v1 conservatism), `b` in the post-`a` state with
-  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement (`hguard`): the
-  guard `a` must touch only public paths, so its exit code — which decides whether
-  `b` runs — is public-determined (closes the Prompt-13 implicit channel). -/
+  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement — the guard `a`'s
+  exit code (which decides whether `b` runs) must be public-determined, so it agrees
+  across states that agree on public paths. That needs BOTH:
+  - `hguard`: `a` touches only public PATHS (Prompt 14 — closes the path channel);
+  - `hstdin`: `a`'s incoming STDIN is public-provenance (`pub = true`) or the
+    canonical empty content (`.empty`, which is constant hence trivially agrees).
+    NEW (Prompt 21): without this, a guard like `grep` reads private data through a
+    piped stdin and leaks it via the exit code — the fourth counterexample. -/
   | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool)
-      (hguard : touchesOnlyPublic p₁ = true) :
+      (hguard : touchesOnlyPublic p₁ = true)
+      (hstdin : pub = true ∨ stdin = .empty) :
       SafePipeline a p₁ s stdin pub →
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
       SafePipeline a (.andThen p₁ p₂) s stdin pub
 
   /-- `a || b`: BOTH branches safe (v1 conservatism), `b` in the post-`a` state with
-  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement (`hguard`), same
-  as `andThen`: the guard's exit code must be public-determined. -/
+  fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement, same as
+  `andThen`: the guard's exit must be public-determined — `hguard` (public paths)
+  AND `hstdin` (public-provenance or empty stdin). -/
   | orElse (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool)
-      (hguard : touchesOnlyPublic p₁ = true) :
+      (hguard : touchesOnlyPublic p₁ = true)
+      (hstdin : pub = true ∨ stdin = .empty) :
       SafePipeline a p₁ s stdin pub →
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
       SafePipeline a (.orElse p₁ p₂) s stdin pub
@@ -174,15 +182,24 @@ public paths. Top-level pipelines start from `.empty` stdin.
 SCOPE: over the FILESYSTEM public projection only; does NOT cover stdout — see the
 `THREAT MODEL — stdout (v1)` note at the top of `Semantics.lean`.
 
-SPEC STRENGTHENED (Prompt 16): the Prompt-15 counterexample
-(`cat /private/secret > /public/out`, accepted when the secret's bytes coincide
-with a public path's) is now REJECTED by `SafePipeline` itself, because
-`write_public_ok` requires public PROVENANCE (`pub = true`, threaded by `provOut`),
-not a per-state `IsPublic` value. With all three known holes closed — unconstrained
-witness (Prompt 07), implicit exit-code flow (Prompt 14), per-state coincidence
-(Prompt 16) — this theorem is now BELIEVED PROVABLE and is the target of Prompt 17.
-Top-level pipelines start from `.empty` stdin with `pub = false` (terminal input is
-not public-provenance). -/
+SPEC HISTORY — FOUR leaks found and closed, each a machine-checked counterexample
+before its fix:
+- unconstrained write witness (Prompt 06 → fixed Prompt 07);
+- implicit exit-code flow via a private-PATH guard (Prompt 13 → `touchesOnlyPublic`
+  guard, Prompt 14);
+- per-state `IsPublic` coincidence (Prompt 15 → provenance-based `write_public_ok`,
+  Prompt 16);
+- implicit exit-code flow via a private-STDIN guard (Prompt 20 →
+  `hstdin : pub = true ∨ stdin = .empty` on `andThen`/`orElse`, Prompt 21):
+  `cat /private/secret | (grep yes && (cat /shared/ref > pub))` — the guard reads
+  private data through its piped stdin; `touchesOnlyPublic` checks the guard's paths
+  but not its stdin. Now REJECTED (the conditional's incoming stdin is
+  private-provenance).
+
+With all FOUR known holes closed, this theorem is BELIEVED PROVABLE (pending the
+next proof attempt). Top-level pipelines start from `.empty` stdin with `pub = false`;
+`.empty` counts as public-provenance for the guard-stdin check (it is constant,
+hence agrees across states). -/
 theorem shellwall_noninterference
     (a : Owner) (p : Pipeline) (s₁ s₂ : FileState)
     (hagree : agreeOnPublicPaths s₁ s₂)

@@ -87,20 +87,22 @@ def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool
       let (ok₁, pub₁) := checkFull a p₁ s stdin pub
       let (s₁, _, ec₁) := evalPipelineFull p₁ s stdin
       let (ok₂, pub₂) := checkFull a p₂ s₁ .empty false
-      -- SAFETY: both branches safe AND the guard `p₁` touches only public paths
-      -- (the public-guard requirement matching SafePipeline.andThen -- closes the
-      -- exit-code implicit-flow channel; Prompt 13/14).
+      -- SAFETY: both branches safe AND public-guard: `p₁` touches only public PATHS
+      -- (Prompt 14) AND its incoming STDIN is public-provenance (`pub`) or `.empty`
+      -- (Prompt 21 — closes the guard-stdin channel; matches SafePipeline.andThen).
       -- FAITHFUL output flag (unchanged from Prompt 09): `&&` runs stage 2 only on
       -- SUCCESS, so on failure the pipeline's output — and its flag — is stage 1's.
-      (ok₁ && ok₂ && touchesOnlyPublic p₁, match ec₁ with | .success => pub₂ | .failure _ => pub₁)
+      (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)),
+       match ec₁ with | .success => pub₂ | .failure _ => pub₁)
   | .orElse p₁ p₂, s, stdin, pub =>
       let (ok₁, pub₁) := checkFull a p₁ s stdin pub
       let (s₁, _, ec₁) := evalPipelineFull p₁ s stdin
       let (ok₂, pub₂) := checkFull a p₂ s₁ .empty false
-      -- SAFETY: both branches safe AND public-only guard (as andThen).
+      -- SAFETY: both branches safe AND public-guard (paths + stdin), as andThen.
       -- FAITHFUL output flag (unchanged): `||` runs stage 2 only on FAILURE, so on
       -- success the output — and its flag — is stage 1's.
-      (ok₁ && ok₂ && touchesOnlyPublic p₁, match ec₁ with | .success => pub₁ | .failure _ => pub₂)
+      (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)),
+       match ec₁ with | .success => pub₁ | .failure _ => pub₂)
 
 /-- The v1 prove-or-reject gate's decision: `true` iff the pipeline is provably
 safe. A whole pipeline starts with `.empty` stdin (nothing piped from a terminal),
@@ -211,24 +213,28 @@ theorem checkFull_sound (a : Owner) (p : Pipeline) :
     cases ec₁ with
     | success =>
       have hcf : checkFull a (.andThen p₁ p₂) s stdin pub
-               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₂) := by
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)), pub₂) := by
         simp only [checkFull, h1, he1, h2]
       refine ⟨?_, ?_⟩
       · simp only [hcf]; intro hok
         simp only [Bool.and_eq_true] at hok
-        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        obtain ⟨⟨⟨h_ok1, h_ok2⟩, h_g⟩, h_sd⟩ := hok
+        rw [Bool.or_eq_true] at h_sd
+        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (h_sd.imp id of_decide_eq_true)
+          (H1safe h_ok1) ?_
         rw [he1]; exact H2safe h_ok2
       · simp only [hcf, provOut, he1]; exact H2eq
     | failure n =>
       have hcf : checkFull a (.andThen p₁ p₂) s stdin pub
-               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₁) := by
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)), pub₁) := by
         simp only [checkFull, h1, he1, h2]
       refine ⟨?_, ?_⟩
       · simp only [hcf]; intro hok
         simp only [Bool.and_eq_true] at hok
-        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        obtain ⟨⟨⟨h_ok1, h_ok2⟩, h_g⟩, h_sd⟩ := hok
+        rw [Bool.or_eq_true] at h_sd
+        refine SafePipeline.andThen a p₁ p₂ s stdin pub h_g (h_sd.imp id of_decide_eq_true)
+          (H1safe h_ok1) ?_
         rw [he1]; exact H2safe h_ok2
       · simp only [hcf, provOut, he1]; exact H1eq
   | orElse p₁ p₂ ih₁ ih₂ =>
@@ -243,24 +249,28 @@ theorem checkFull_sound (a : Owner) (p : Pipeline) :
     cases ec₁ with
     | success =>
       have hcf : checkFull a (.orElse p₁ p₂) s stdin pub
-               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₁) := by
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)), pub₁) := by
         simp only [checkFull, h1, he1, h2]
       refine ⟨?_, ?_⟩
       · simp only [hcf]; intro hok
         simp only [Bool.and_eq_true] at hok
-        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        obtain ⟨⟨⟨h_ok1, h_ok2⟩, h_g⟩, h_sd⟩ := hok
+        rw [Bool.or_eq_true] at h_sd
+        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (h_sd.imp id of_decide_eq_true)
+          (H1safe h_ok1) ?_
         rw [he1]; exact H2safe h_ok2
       · simp only [hcf, provOut, he1]; exact H1eq
     | failure n =>
       have hcf : checkFull a (.orElse p₁ p₂) s stdin pub
-               = (ok₁ && ok₂ && touchesOnlyPublic p₁, pub₂) := by
+               = (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)), pub₂) := by
         simp only [checkFull, h1, he1, h2]
       refine ⟨?_, ?_⟩
       · simp only [hcf]; intro hok
         simp only [Bool.and_eq_true] at hok
-        obtain ⟨⟨h_ok1, h_ok2⟩, h_g⟩ := hok
-        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (H1safe h_ok1) ?_
+        obtain ⟨⟨⟨h_ok1, h_ok2⟩, h_g⟩, h_sd⟩ := hok
+        rw [Bool.or_eq_true] at h_sd
+        refine SafePipeline.orElse a p₁ p₂ s stdin pub h_g (h_sd.imp id of_decide_eq_true)
+          (H1safe h_ok1) ?_
         rw [he1]; exact H2safe h_ok2
       · simp only [hcf, provOut, he1]; exact H2eq
 

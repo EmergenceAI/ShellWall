@@ -122,4 +122,27 @@ whose guard touches a private path is rejected (`touchesOnlyPublic`). -/
 #guard checkSafe alice
   (.andThen (.pipe rdP (.single (.grep "SECRET"))) (.pipe rdS wr)) s0 == false
 
+/-! ## Prompt-21: guard-STDIN implicit-flow (the fourth hole) and its controls -/
+
+-- The fourth counterexample, now REJECTED: `cat notes | (grep SECRET && (cat shared
+-- > public/out))`. The `&&` is fed (via the outer pipe) private stdin from `cat
+-- notes`; the guard `grep SECRET` filters that private stdin, so its exit — and
+-- thus whether the public write runs — leaks private data. `touchesOnlyPublic`
+-- passes (grep has no path), but the new stdin premise (`pub = true ∨ stdin =
+-- .empty`) fails: the conditional's incoming stdin is private-provenance.
+#guard checkSafe alice
+  (.pipe rdP (.andThen (.single (.grep "SECRET")) (.pipe rdS wr))) s0 == false
+
+-- Control A (`.empty`-stdin conditional must still permit): top-level
+-- `(cat shared && (cat shared > public/out))`. The guard reads a public path and
+-- the `&&`'s incoming stdin is the canonical `.empty` — this is the case that
+-- breaks if `.empty` isn't accepted as public-provenance.
+#guard checkSafe alice (.andThen rdS (.pipe rdS wr)) s0 == true
+
+-- Control B (public-fed conditional must still permit): `cat shared | (grep PUB &&
+-- (cat shared > public/out))`. The `&&`'s incoming stdin is public-provenance
+-- (`pub = true`, from the public read feeding the pipe), so the guard's stdin is
+-- public and the stdin premise holds.
+#guard checkSafe alice (.pipe rdS (.andThen (.single (.grep "PUB")) (.pipe rdS wr))) s0 == true
+
 end ShellWall.Test
