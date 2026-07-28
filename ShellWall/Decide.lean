@@ -13,9 +13,9 @@ def canWriteB (a : Owner) (p : Path) : Bool := decide (ownerOf p = a)
 -- Provenance is tracked FORWARD by `cmdOutIsPublic`/`provOut` (in `Semantics`),
 -- shared by both the decider here and `SafeCmd`/`SafePipeline`. There is
 -- deliberately no `isPublicB : FileState → Content → Bool` (a backward, value-based
--- decision): `IsPublic` is a derivation relation, `Content` carries no trace of its
--- derivation, and — per the Prompt-15 counterexample — value-based public-ness is
--- relationally unsound anyway. Forward provenance is the right notion.
+-- decision): `Content` carries no trace of its derivation, and — per the Prompt-15
+-- counterexample — value-based public-ness is relationally unsound anyway (v1 had a
+-- value predicate; deleted in Prompt 22). Forward provenance is the right notion.
 
 /-! ## Deciding safety -/
 
@@ -23,11 +23,11 @@ def canWriteB (a : Owner) (p : Path) : Bool := decide (ownerOf p = a)
 `stdinPub`. Mirrors `SafeCmd`'s constructors case-for-case (which
 `checkFull_sound`'s single case follows).
 
-NOTE: the state parameter `_s` is deliberately unused. `SafeCmd` is state-indexed,
-but its only state-dependent premise is `IsPublic s stdin`, whose decision is
-factored out into `stdinPub` (computed by `cmdOutIsPublic` at the producing stage,
-where the state IS consulted); `classify`/`ownerOf` are state-independent. The
-parameter is kept for signature parallelism with `SafeCmd`. -/
+NOTE: the state parameter `_s` is deliberately unused. `SafeCmd`'s only state-
+dependent premise is the public-provenance of `stdin`, whose decision is factored out
+into `stdinPub` (computed by `cmdOutIsPublic` at the producing stage, where the state
+IS consulted); `classify`/`ownerOf` are state-independent. The parameter is kept for
+signature parallelism with `SafeCmd`. -/
 def checkCmd (a : Owner) (c : Cmd) (_s : FileState) (stdinPub : Bool) : Bool :=
   match c with
   -- read_ok / grep_ok / sort_ok / uniq_ok / wc_ok are all unconditional
@@ -38,14 +38,13 @@ def checkCmd (a : Owner) (c : Cmd) (_s : FileState) (stdinPub : Bool) : Bool :=
   | .wc     => true
   | .write p _ =>
       match classify p with
-      -- write_public_ok: needs CanWrite AND IsPublic on the content flowing in.
-      -- For `.append` the content written is `concatContent (s p) stdin`; since
-      -- `p` is publicRW, the existing content is public by of_public_read, so
-      -- of_concat reduces the obligation to exactly `stdinPub` -- the same check
-      -- as `.overwrite`. (When `s p = none`, `concatContent .empty stdin` reduces
-      -- to `stdin`, giving the same obligation.)
+      -- write_public_ok: needs CanWrite AND public-provenance stdin (`stdinPub`).
+      -- For `.append` the content written is `concatContent (s p) stdin`; since `p`
+      -- is publicRW its existing content is public-provenance, so the append obligation
+      -- reduces to exactly `stdinPub` -- the same check as `.overwrite`. (When
+      -- `s p = none`, `concatContent .empty stdin` reduces to `stdin`, same obligation.)
       | .publicRW  => canWriteB a p && stdinPub
-      -- write_private_ok: CanWrite only, no IsPublic obligation
+      -- write_private_ok: CanWrite only, no provenance obligation
       | .privateRW => canWriteB a p
       -- read-only classes: NO write rule accepts them, so no write is ever safe
       | .publicRO  => false
@@ -131,8 +130,8 @@ threaded together (the second feeds the first in `pipe`):
   threads into the next stage is exactly the one `SafePipeline` expects.
 
 Simpler than the pre-Prompt-16 version: the write obligation is now the checkable
-`pub = true` (no `IsPublic` reconstruction), because spec and decider share the same
-forward-provenance notion. -/
+`pub = true` (no value-predicate reconstruction), because spec and decider share the
+same forward-provenance notion. -/
 theorem checkFull_sound (a : Owner) (p : Pipeline) :
     ∀ (s : FileState) (stdin : Content) (pub : Bool),
       ((checkFull a p s stdin pub).1 = true → SafePipeline a p s stdin pub) ∧

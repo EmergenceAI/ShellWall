@@ -2,7 +2,7 @@ import ShellWall.Basic
 
 /-- The confidentiality/writability class the policy assigns to a path. Two axes:
 public vs. private (may its content flow to a public sink?) and RW vs. RO (may it
-be written?). `IsPublic.of_public_read` seeds public content from `public*` paths;
+be written?). `cmdOutIsPublic` seeds public PROVENANCE from reads of `public*` paths;
 the `write_*` safety rules gate writes on the `*RW` classes. -/
 inductive PathClass where
   /-- Public and writable: readable as public data, and a valid public write sink. -/
@@ -23,8 +23,8 @@ inductive PathClass where
 -- throwaway. The safest classification for an *unknown* path is the most
 -- restrictive one that still lets its owner use it -- `privateRW`: writable by
 -- its owner, never a public sink. Defaulting unknown paths to any `public` class
--- would let unmodeled paths act as leak sinks, because `IsPublic.of_public_read`
--- seeds public content from exactly the paths classified public.
+-- would let unmodeled paths act as leak sinks, because `cmdOutIsPublic` seeds public
+-- provenance from exactly the paths classified public.
 --
 -- SUBTREE MATCHING: each rule matches a path PREFIX with a `List`-cons tail
 -- (`_`) absorbing arbitrary remaining depth, so a rule governs its whole subtree
@@ -44,9 +44,9 @@ inductive PathClass where
 -- world-readable artifact. No `SafeCmd` write rule accepts `publicRO`
 -- (`write_public_ok` needs `publicRW`, `write_private_ok` needs `privateRW`), so
 -- /shared is unwritable by everyone -- including `system`. It is exactly the kind
--- of source `IsPublic.of_public_read` is meant to certify content from, so making
--- it reachable means the Phase 8 noninterference proof must discharge a real
--- public-read case rather than a vacuous one.
+-- of source `cmdOutIsPublic` certifies public-provenance from, so making it reachable
+-- means the noninterference proof must discharge a real public-read case rather than
+-- a vacuous one.
 /-- A path's segment list for policy matching (approach (A)). `FilePath.components`
 yields a leading `""` for absolute paths (`/home/a` → `["", "home", "a"]`);
 filtering empty segments normalizes absolute, relative, and trailing-slash forms

@@ -62,7 +62,7 @@ namespace ShellWall.Test
 #guard checkSafe alice
   (.pipe (.pipe rdS (.single .sort)) (.single (.write pub .overwrite))) s0 == true
 
--- Case 9c: `cat shared | uniq | > public/out` → permit (of_uniq: uniq of public is public).
+-- Case 9c: `cat shared | uniq | > public/out` → permit (uniq preserves public provenance).
 #guard checkSafe alice
   (.pipe (.pipe rdS (.single .uniq)) (.single (.write pub .overwrite))) s0 == true
 

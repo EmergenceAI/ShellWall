@@ -16,8 +16,8 @@ provable (it quantifies only over the filesystem's public projection).
 > the explicit deployment assumption that the execution proxy does NOT return
 > unredirected stdout to the agent. Under that assumption, an unredirected
 > stdout channel is not agent-observable and therefore not a leak path. If that
-> assumption ever fails to hold, stdout must be modeled as a public sink (an
-> `IsPublic` obligation on writes to it), which is a signature change to
+> assumption ever fails to hold, stdout must be modeled as a public sink (a
+> public-provenance obligation on writes to it), which is a signature change to
 > `evalPipeline` — tracked as a v2 item. This is consistent with the existing
 > decision to treat covert/side channels (timing, file size) as out of scope for
 > v1.
@@ -352,9 +352,10 @@ def agreeOnPublicPaths (s₁ s₂ : FileState) : Prop :=
 `cmdOutIsPublic`/`provOut` compute, FORWARD along execution, whether a command's or
 pipeline's stdout is "public-provenance": built only from reads of PUBLIC paths and
 public-preserving transforms. This is the notion that makes the safety spec
-relationally sound (Prompt 16): unlike the per-state, value-based `IsPublic` (which
-a private value coinciding with a public one satisfies), provenance is pinned to the
-paths READ, so agreeing states yield the same value. The DECIDER already used this;
+relationally sound (Prompt 16): unlike a per-state, value-based public predicate
+(which a private value coinciding with a public one satisfies — v1 had one, deleted
+in Prompt 22), provenance is pinned to the paths READ, so agreeing states yield the
+same value. The DECIDER already used this;
 `SafeCmd`/`SafePipeline` now consume it too, and it is defined here so both can. -/
 
 /-- Whether a command's stdout is public-PROVENANCE, given the state it runs in and

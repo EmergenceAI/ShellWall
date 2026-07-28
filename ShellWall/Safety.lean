@@ -1,44 +1,15 @@
 import ShellWall.Semantics
 
-/-- `IsPublic s c`: content `c` is derivable solely from public data in state `s`.
-
-NOTE (Prompt 16): this is NO LONGER the write obligation — `write_public_ok` now
-requires public PROVENANCE (`pub = true`), because a per-state `IsPublic` value is
-relationally unsound (a private value coinciding with a public one satisfies it; see
-`Test/ExplicitFlow.lean`). `IsPublic` is retained as a reusable building block for
-the noninterference proof (`isPublic_agrees`: public content transports across
-agreeing states), not as a safety gate.
-
-⚠ DELIBERATE OMISSION — LOAD-BEARING (design §3.2/§7.3): there is NO constructor
-deriving `IsPublic` from aggregation or summarization of private content (counts,
-hashes, samples, statistics — anything `wc`-like). This omission is the primary
-mechanism preventing leakage through covert statistical channels. Do NOT
-"helpfully" add such a constructor: it would make the whole guarantee unsound. The
-present constructors are exactly the "safe transform" class (identity-preserving of
-public-ness) plus the public-read base case. -/
-inductive IsPublic : FileState → Content → Prop where
-  /-- BASE CASE: content read from a path classified public (`publicRO`/`publicRW`)
-  is public. -/
-  | of_public_read (s : FileState) (p : Path) (c : Content)
-      (hclass : classify p = .publicRO ∨ classify p = .publicRW)
-      (hread  : s p = some c) :
-      IsPublic s c
-  /-- Concatenation of two public contents is public (`cat` of public sources). -/
-  | of_concat (s : FileState) (c₁ c₂ : Content) :
-      IsPublic s c₁ → IsPublic s c₂ → IsPublic s (concatContent c₁ c₂)
-  /-- SAFE TRANSFORM: filtering public content through `grep` keeps it public. -/
-  | of_filter (s : FileState) (c : Content) (pat : String) :
-      IsPublic s c → IsPublic s (grepFilter pat c)
-  /-- SAFE TRANSFORM: sorting public content keeps it public. -/
-  | of_sort (s : FileState) (c : Content) :
-      IsPublic s c → IsPublic s (sortContent c)
-  /-- SAFE TRANSFORM: `uniq` of public content is public — same safe class as
-  `of_filter`/`of_sort` (adjacent dedup reveals no more than `grep` already does).
-  Uses the same `uniqContent` helper as `evalCmd`'s uniq case, so `checkSafe`'s uniq
-  handling and this constructor agree on "uniq output". Deliberately NOT the same
-  class as `wc`: no aggregation/count constructor exists (see the type note). -/
-  | of_uniq (s : FileState) (c : Content) :
-      IsPublic s c → IsPublic s (uniqContent c)
+/-! PROVENANCE, NOT A VALUE PREDICATE (design note). Public-ness of content is tracked
+FORWARD, along execution, by the Bool `cmdOutIsPublic`/`provOut` (in `Semantics`),
+pinned to the PATHS a stage reads. v1 originally used a per-state value predicate
+`IsPublic : FileState → Content → Prop` as the `write_public_ok` obligation; that was
+relationally UNSOUND (a private value coinciding with a public path's bytes satisfied
+it in each state yet differed across agreeing states — the Prompt-15 counterexample
+`cat /private/secret > public`), so Prompt 16 replaced it with provenance (`pub =
+true`) and Prompt-22 deleted the dead predicate. The load-bearing omission survives in
+`cmdOutIsPublic`: `wc` (and any aggregation) is NEVER certified public, closing the
+covert statistical channel. Do NOT reintroduce a value-based public predicate. -/
 
 /-- `CanWrite a p`: owner `a` has write-authority over path `p`. In v1 the only
 way to hold it is to own `p` outright; delegation is deferred to v2. -/
@@ -52,14 +23,13 @@ given `stdin` content flowing in, where `pub : Bool` records whether that stdin 
 public-PROVENANCE (produced by reads of public paths / public-preserving transforms
 — see `provOut`). Only `write_public_ok` consumes `pub`.
 
-PROMPT-16 FIX: `write_public_ok` now requires `pub = true` (provenance) rather than
-`IsPublic s stdin` (value). The value-based obligation was relationally UNSOUND: a
-private value coinciding with a public path's bytes satisfied `IsPublic` in each
-state separately, yet differed across agreeing states (the Prompt-15 counterexample
+PROMPT-16 FIX: `write_public_ok` requires `pub = true` (provenance) rather than a
+per-state value predicate. The value-based obligation was relationally UNSOUND: a
+private value coinciding with a public path's bytes satisfied it in each state
+separately, yet differed across agreeing states (the Prompt-15 counterexample
 `cat /private/secret > public`). Provenance is pinned to the paths READ, so agreeing
 states force the same value. This aligns the spec with the already-correct decider
-(`checkCmd`/`cmdOutIsPublic`). `IsPublic` is retained (see `isPublic_agrees`) but is
-no longer the write obligation.
+(`checkCmd`/`cmdOutIsPublic`); the dead value predicate was removed in Prompt 22.
 
 The four stream-transform commands (grep/sort/uniq/wc) touch no path directly, so
 they are unconditionally safe *as commands*; their provenance effect is in
@@ -564,8 +534,8 @@ before its fix:
 - unconstrained write witness (Prompt 06 → fixed Prompt 07);
 - implicit exit-code flow via a private-PATH guard (Prompt 13 → `touchesOnlyPublic`
   guard, Prompt 14);
-- per-state `IsPublic` coincidence (Prompt 15 → provenance-based `write_public_ok`,
-  Prompt 16);
+- per-state value-predicate coincidence (Prompt 15 → provenance-based
+  `write_public_ok`, Prompt 16; dead predicate deleted Prompt 22);
 - implicit exit-code flow via a private-STDIN guard (Prompt 20 →
   `hstdin : pub = true ∨ stdin = .empty` on `andThen`/`orElse`, Prompt 21):
   `cat /private/secret | (grep yes && (cat /shared/ref > pub))` — the guard reads
