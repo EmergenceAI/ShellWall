@@ -174,6 +174,383 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Bool �
       SafePipeline a p₂ (evalPipelineFull p₁ s stdin).1 .empty false →
       SafePipeline a (.orElse p₁ p₂) s stdin pub
 
+/-! ## Noninterference proof infrastructure
+
+The relational (two-execution) machinery proving `shellwall_noninterference`. Built
+bottom-up: agreement algebra → command-level agreement (`evalCmd_agrees`) → the
+public-program-counter lemma (`touchesOnlyPublic_agrees`) → the main relational
+invariant (`eval_agrees`) → the theorem. See the theorem's docstring for where each
+of the four historical fixes is consumed. -/
+
+/-- `updateState` preserves public-path agreement when the SAME content is written to
+the SAME path. -/
+theorem updateState_agrees {s₁ s₂ : FileState} (p : Path) (c : Option Content)
+    (hag : agreeOnPublicPaths s₁ s₂) :
+    agreeOnPublicPaths (updateState s₁ p c) (updateState s₂ p c) := by
+  intro q hq
+  simp only [updateState]
+  split
+  · rfl
+  · exact hag q hq
+
+/-- Writing to a PRIVATE path preserves public-path agreement, regardless of the
+(possibly differing) content written — the write cannot touch a public path. -/
+theorem updateState_private_agrees {s₁ s₂ : FileState} {p : Path} (c₁ c₂ : Option Content)
+    (hpriv : isPublicPath p = false) (hag : agreeOnPublicPaths s₁ s₂) :
+    agreeOnPublicPaths (updateState s₁ p c₁) (updateState s₂ p c₂) := by
+  intro q hq
+  simp only [updateState]
+  have hqp : ¬ (q = p) := by
+    intro h; rw [h] at hq; rw [hpriv] at hq; exact Bool.noConfusion hq
+  simp only [if_neg hqp]
+  exact hag q hq
+
+/-- `agreeOnPublicPaths` is symmetric. -/
+theorem agree_symm {s₁ s₂ : FileState} (h : agreeOnPublicPaths s₁ s₂) :
+    agreeOnPublicPaths s₂ s₁ := fun p hp => (h p hp).symm
+
+/-- `agreeOnPublicPaths` is transitive. -/
+theorem agree_trans {s₁ s₂ s₃ : FileState} (h₁ : agreeOnPublicPaths s₁ s₂)
+    (h₂ : agreeOnPublicPaths s₂ s₃) : agreeOnPublicPaths s₁ s₃ :=
+  fun p hp => (h₁ p hp).trans (h₂ p hp)
+
+/-- Updating a PRIVATE path leaves the public projection unchanged (agrees with the
+pre-update state). -/
+theorem updateState_private_self {s : FileState} {q : Path} (c : Option Content)
+    (hpriv : isPublicPath q = false) : agreeOnPublicPaths (updateState s q c) s := by
+  intro p hp
+  simp only [updateState]
+  have hpq : ¬ (p = q) := by intro h; rw [h, hpriv] at hp; exact Bool.noConfusion hp
+  rw [if_neg hpq]
+
+/-- Public-path agreement gives equal public projections. -/
+theorem publicProjection_eq_of_agree {s₁ s₂ : FileState} (hag : agreeOnPublicPaths s₁ s₂) :
+    publicProjection s₁ = publicProjection s₂ := by
+  funext p
+  simp only [publicProjection]
+  split
+  · rename_i h; exact hag p h
+  · rfl
+
+/-- `read` leaves the state unchanged. -/
+theorem evalCmd_fst_read (q : Path) (s : FileState) (stdin : Content) :
+    (evalCmd (.read q) s stdin).1 = s := by simp only [evalCmd]; split <;> rfl
+
+/-- `grep` leaves the state unchanged. -/
+theorem evalCmd_fst_grep (pat : String) (s : FileState) (stdin : Content) :
+    (evalCmd (.grep pat) s stdin).1 = s := by simp only [evalCmd]; split <;> rfl
+
+/-- COMMAND-LEVEL RELATIONAL AGREEMENT (the `single` base case). For a command safe in
+both runs, from agreeing states with stdin that agrees when public-provenance
+(`pub = true`): the resulting states agree on public paths; the stdout is EQUAL when
+the command's output is public-provenance (`cmdOutIsPublic = true`); and the output
+provenance flag agrees. Consumes: the `write_public_ok` `pub = true` obligation
+(Prompt 16) forces equal written content into public paths; `write_private_ok` sends
+(possibly differing) content only to a private path, invisible to the projection. -/
+theorem evalCmd_agrees (a : Owner) (c : Cmd) (s₁ s₂ : FileState)
+    (stdin₁ stdin₂ : Content) (pub : Bool)
+    (hag : agreeOnPublicPaths s₁ s₂)
+    (hc₁ : SafeCmd a c s₁ stdin₁ pub) (hc₂ : SafeCmd a c s₂ stdin₂ pub)
+    (hin : pub = true → stdin₁ = stdin₂) :
+    agreeOnPublicPaths (evalCmd c s₁ stdin₁).1 (evalCmd c s₂ stdin₂).1
+    ∧ (cmdOutIsPublic c s₁ pub = true →
+        (evalCmd c s₁ stdin₁).2.1 = (evalCmd c s₂ stdin₂).2.1)
+    ∧ cmdOutIsPublic c s₁ pub = cmdOutIsPublic c s₂ pub := by
+  cases c with
+  | read q =>
+    refine ⟨?_, ?_, ?_⟩
+    · rw [evalCmd_fst_read, evalCmd_fst_read]; exact hag
+    · intro hp
+      simp only [cmdOutIsPublic, Bool.and_eq_true] at hp
+      obtain ⟨hqpub, _⟩ := hp
+      simp only [evalCmd]; rw [hag q hqpub]; split <;> rfl
+    · simp only [cmdOutIsPublic]
+      cases hq : isPublicPath q with
+      | false => rfl
+      | true => rw [hag q hq]
+  | write q mode =>
+    cases hc₁ with
+    | write_public_ok =>
+      rename_i hclass hown hpub
+      have hqpub : isPublicPath q = true := by simp only [isPublicPath, hclass]
+      have hstdineq : stdin₁ = stdin₂ := hin hpub
+      refine ⟨?_, ?_, ?_⟩
+      · cases mode with
+        | overwrite =>
+          simp only [evalCmd]; rw [hstdineq]; exact updateState_agrees q _ hag
+        | append =>
+          simp only [evalCmd]; rw [hstdineq, hag q hqpub]; exact updateState_agrees q _ hag
+      · intro hp; simp [cmdOutIsPublic] at hp
+      · simp only [cmdOutIsPublic]
+    | write_private_ok =>
+      rename_i hclass hown
+      have hpriv : isPublicPath q = false := by simp only [isPublicPath, hclass]
+      refine ⟨?_, ?_, ?_⟩
+      · simp only [evalCmd]; exact updateState_private_agrees _ _ hpriv hag
+      · intro hp; simp [cmdOutIsPublic] at hp
+      · simp only [cmdOutIsPublic]
+  | grep pat =>
+    refine ⟨?_, ?_, ?_⟩
+    · rw [evalCmd_fst_grep, evalCmd_fst_grep]; exact hag
+    · intro hp; simp only [cmdOutIsPublic] at hp
+      have hstdineq : stdin₁ = stdin₂ := hin hp
+      simp only [evalCmd]; rw [hstdineq]; split <;> rfl
+    · simp only [cmdOutIsPublic]
+  | sort =>
+    refine ⟨hag, ?_, ?_⟩
+    · intro hp; simp only [cmdOutIsPublic] at hp
+      simp only [evalCmd]; rw [hin hp]
+    · simp only [cmdOutIsPublic]
+  | uniq =>
+    refine ⟨hag, ?_, ?_⟩
+    · intro hp; simp only [cmdOutIsPublic] at hp
+      simp only [evalCmd]; rw [hin hp]
+    · simp only [cmdOutIsPublic]
+  | wc =>
+    refine ⟨hag, ?_, ?_⟩
+    · intro hp; simp [cmdOutIsPublic] at hp
+    · simp only [cmdOutIsPublic]
+  | rm q =>
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalCmd]
+      cases hq : isPublicPath q with
+      | true =>
+        rw [hag q hq]; split
+        · exact updateState_agrees q none hag
+        · exact hag
+      | false =>
+        split <;> split
+        · exact updateState_private_agrees none none hq hag
+        · exact agree_trans (updateState_private_self none hq) hag
+        · exact agree_trans hag (agree_symm (updateState_private_self none hq))
+        · exact hag
+    · intro hp; simp [cmdOutIsPublic] at hp
+    · simp only [cmdOutIsPublic]
+  | mkdir q =>
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalCmd]
+      cases hq : isPublicPath q with
+      | true =>
+        rw [hag q hq]; split
+        · exact hag
+        · exact updateState_agrees q (some .empty) hag
+      | false =>
+        split <;> split
+        · exact hag
+        · exact agree_trans hag (agree_symm (updateState_private_self (some .empty) hq))
+        · exact agree_trans (updateState_private_self (some .empty) hq) hag
+        · exact updateState_private_agrees (some .empty) (some .empty) hq hag
+    · intro hp; simp [cmdOutIsPublic] at hp
+    · simp only [cmdOutIsPublic]
+
+/-- GUARD-EXIT AGREEMENT (the Prompt-14 payoff, `hguard`). A pipeline that touches only
+PUBLIC paths, run on two states agreeing on public paths WITH THE SAME stdin, produces
+agreeing public state, EQUAL stdout, and EQUAL exit code. Its control flow and output
+are functions of the public part of the state only — the "public program counter"
+discipline. Proved by induction over the pipeline structure (nested conditionals
+handled automatically), so it also validates the Prompt-21 Step-0 reasoning that
+compound guards are covered. -/
+theorem touchesOnlyPublic_agrees (p : Pipeline) :
+    ∀ (s₁ s₂ : FileState) (stdin : Content),
+      touchesOnlyPublic p = true → agreeOnPublicPaths s₁ s₂ →
+      agreeOnPublicPaths (evalPipelineFull p s₁ stdin).1 (evalPipelineFull p s₂ stdin).1
+      ∧ (evalPipelineFull p s₁ stdin).2.1 = (evalPipelineFull p s₂ stdin).2.1
+      ∧ (evalPipelineFull p s₁ stdin).2.2 = (evalPipelineFull p s₂ stdin).2.2 := by
+  induction p with
+  | single c =>
+    intro s₁ s₂ stdin htp hag
+    simp only [touchesOnlyPublic, cmdTouchesOnlyPublic] at htp
+    cases c with
+    | read q =>
+      have hqp : s₁ q = s₂ q := hag q htp
+      simp only [evalPipelineFull, evalCmd, hqp]
+      split <;> exact ⟨hag, by trivial, by trivial⟩
+    | write q mode =>
+      have hqp : s₁ q = s₂ q := hag q htp
+      cases mode with
+      | overwrite =>
+        simp only [evalPipelineFull, evalCmd]
+        exact ⟨updateState_agrees q (some stdin) hag, by trivial, by trivial⟩
+      | append =>
+        simp only [evalPipelineFull, evalCmd, hqp]
+        exact ⟨updateState_agrees q _ hag, by trivial, by trivial⟩
+    | grep pat =>
+      simp only [evalPipelineFull, evalCmd]
+      split <;> exact ⟨hag, by trivial, by trivial⟩
+    | sort => simp only [evalPipelineFull, evalCmd]; exact ⟨hag, by trivial, by trivial⟩
+    | uniq => simp only [evalPipelineFull, evalCmd]; exact ⟨hag, by trivial, by trivial⟩
+    | wc => simp only [evalPipelineFull, evalCmd]; exact ⟨hag, by trivial, by trivial⟩
+    | rm q =>
+      have hqp : s₁ q = s₂ q := hag q htp
+      simp only [evalPipelineFull, evalCmd, hqp]
+      split
+      · exact ⟨updateState_agrees q none hag, by trivial, by trivial⟩
+      · exact ⟨hag, by trivial, by trivial⟩
+    | mkdir q =>
+      have hqp : s₁ q = s₂ q := hag q htp
+      simp only [evalPipelineFull, evalCmd, hqp]
+      split
+      · exact ⟨hag, by trivial, by trivial⟩
+      · exact ⟨updateState_agrees q (some .empty) hag, by trivial, by trivial⟩
+  | pipe p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin htp hag
+    simp only [touchesOnlyPublic, Bool.and_eq_true] at htp
+    obtain ⟨ht1, ht2⟩ := htp
+    obtain ⟨ha1, ho1, _⟩ := ih₁ s₁ s₂ stdin ht1 hag
+    simp only [evalPipelineFull]
+    rw [ho1]
+    exact ih₂ _ _ (evalPipelineFull p₁ s₂ stdin).2.1 ht2 ha1
+  | seq p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin htp hag
+    simp only [touchesOnlyPublic, Bool.and_eq_true] at htp
+    obtain ⟨ht1, ht2⟩ := htp
+    obtain ⟨ha1, _, _⟩ := ih₁ s₁ s₂ stdin ht1 hag
+    simp only [evalPipelineFull]
+    exact ih₂ _ _ .empty ht2 ha1
+  | andThen p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin htp hag
+    simp only [touchesOnlyPublic, Bool.and_eq_true] at htp
+    obtain ⟨ht1, ht2⟩ := htp
+    obtain ⟨ha1, ho1, he1⟩ := ih₁ s₁ s₂ stdin ht1 hag
+    simp only [evalPipelineFull]
+    rw [he1, ho1]
+    cases hec : (evalPipelineFull p₁ s₂ stdin).2.2 with
+    | success => exact ih₂ _ _ .empty ht2 ha1
+    | failure n => exact ⟨ha1, rfl, rfl⟩
+  | orElse p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin htp hag
+    simp only [touchesOnlyPublic, Bool.and_eq_true] at htp
+    obtain ⟨ht1, ht2⟩ := htp
+    obtain ⟨ha1, ho1, he1⟩ := ih₁ s₁ s₂ stdin ht1 hag
+    simp only [evalPipelineFull]
+    rw [he1, ho1]
+    cases hec : (evalPipelineFull p₁ s₂ stdin).2.2 with
+    | success => exact ⟨ha1, rfl, rfl⟩
+    | failure n => exact ih₂ _ _ .empty ht2 ha1
+
+/-- THE RELATIONAL INVARIANT (main induction). For a pipeline safe in two runs from
+agreeing states, with stdin that agrees when public-provenance (`pub = true`):
+(1) resulting public state agrees; (2) the stdout is EQUAL when the pipeline's output
+is public-provenance (`provOut = true`) — the `provOut`-transport / Prompt-16
+`pub`-provenance payoff; (3) the output provenance flag agrees across runs.
+
+Where the four fixes are consumed:
+- `evalCmd_agrees` (single/write case): content-indexing (Prompt 07) + `pub` provenance
+  (Prompt 16) force equal content into public paths.
+- `andThen`/`orElse`: `hguard` (Prompt 14) lets `touchesOnlyPublic_agrees` fire, and
+  `hstdin` (Prompt 21) — combined across BOTH runs — forces `stdin₁ = stdin₂`, so the
+  guard's exit agrees and the SAME branch runs in both. -/
+theorem eval_agrees (a : Owner) (p : Pipeline) :
+    ∀ (s₁ s₂ : FileState) (stdin₁ stdin₂ : Content) (pub : Bool),
+      agreeOnPublicPaths s₁ s₂ →
+      SafePipeline a p s₁ stdin₁ pub →
+      SafePipeline a p s₂ stdin₂ pub →
+      (pub = true → stdin₁ = stdin₂) →
+      agreeOnPublicPaths (evalPipelineFull p s₁ stdin₁).1 (evalPipelineFull p s₂ stdin₂).1
+      ∧ (provOut p s₁ stdin₁ pub = true →
+          (evalPipelineFull p s₁ stdin₁).2.1 = (evalPipelineFull p s₂ stdin₂).2.1)
+      ∧ provOut p s₁ stdin₁ pub = provOut p s₂ stdin₂ pub := by
+  induction p with
+  | single c =>
+    intro s₁ s₂ stdin₁ stdin₂ pub hag hs₁ hs₂ hin
+    cases hs₁ with
+    | single _ _ _ _ hc₁ =>
+    cases hs₂ with
+    | single _ _ _ _ hc₂ =>
+    exact evalCmd_agrees a c s₁ s₂ stdin₁ stdin₂ pub hag hc₁ hc₂ hin
+  | pipe p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin₁ stdin₂ pub hag hs₁ hs₂ hin
+    cases hs₁ with
+    | pipe _ _ _ _ _ S1₁ S2₁ =>
+    cases hs₂ with
+    | pipe _ _ _ _ _ S1₂ S2₂ =>
+    obtain ⟨ha1, hb1, hc1⟩ := ih₁ s₁ s₂ stdin₁ stdin₂ pub hag S1₁ S1₂ hin
+    rw [← hc1] at S2₂
+    obtain ⟨ha2, hb2, hc2⟩ :=
+      ih₂ (evalPipelineFull p₁ s₁ stdin₁).1 (evalPipelineFull p₁ s₂ stdin₂).1
+        (evalPipelineFull p₁ s₁ stdin₁).2.1 (evalPipelineFull p₁ s₂ stdin₂).2.1
+        (provOut p₁ s₁ stdin₁ pub) ha1 S2₁ S2₂ hb1
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalPipelineFull]; exact ha2
+    · simp only [evalPipelineFull, provOut]; exact hb2
+    · simp only [provOut]; rw [← hc1]; exact hc2
+  | seq p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin₁ stdin₂ pub hag hs₁ hs₂ hin
+    cases hs₁ with
+    | seq _ _ _ _ _ S1₁ S2₁ =>
+    cases hs₂ with
+    | seq _ _ _ _ _ S1₂ S2₂ =>
+    obtain ⟨ha1, _, _⟩ := ih₁ s₁ s₂ stdin₁ stdin₂ pub hag S1₁ S1₂ hin
+    obtain ⟨ha2, hb2, hc2⟩ :=
+      ih₂ (evalPipelineFull p₁ s₁ stdin₁).1 (evalPipelineFull p₁ s₂ stdin₂).1
+        .empty .empty false ha1 S2₁ S2₂ (fun _ => rfl)
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalPipelineFull]; exact ha2
+    · simp only [evalPipelineFull, provOut]; exact hb2
+    · simp only [provOut]; exact hc2
+  | andThen p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin₁ stdin₂ pub hag hs₁ hs₂ hin
+    cases hs₁ with
+    | andThen _ _ _ _ _ hguard₁ hstdin₁ S1₁ S2₁ =>
+    cases hs₂ with
+    | andThen _ _ _ _ _ hguard₂ hstdin₂ S1₂ S2₂ =>
+    have hstdineq : stdin₁ = stdin₂ := by
+      rcases hstdin₁ with h | h
+      · exact hin h
+      · rcases hstdin₂ with h2 | h2
+        · exact hin h2
+        · rw [h, h2]
+    rw [hstdineq] at S1₁ S2₁ ⊢
+    obtain ⟨hga, hgo, hge⟩ := touchesOnlyPublic_agrees p₁ s₁ s₂ stdin₂ hguard₁ hag
+    obtain ⟨_, _, hpc1⟩ := ih₁ s₁ s₂ stdin₂ stdin₂ pub hag S1₁ S1₂ (fun _ => rfl)
+    obtain ⟨ha2, hb2, hc2⟩ :=
+      ih₂ (evalPipelineFull p₁ s₁ stdin₂).1 (evalPipelineFull p₁ s₂ stdin₂).1
+        .empty .empty false hga S2₁ S2₂ (fun _ => rfl)
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalPipelineFull]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => exact ha2
+      | failure n => exact hga
+    · simp only [evalPipelineFull, provOut]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => exact hb2
+      | failure n => intro _; exact hgo
+    · simp only [provOut]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => exact hc2
+      | failure n => exact hpc1
+  | orElse p₁ p₂ ih₁ ih₂ =>
+    intro s₁ s₂ stdin₁ stdin₂ pub hag hs₁ hs₂ hin
+    cases hs₁ with
+    | orElse _ _ _ _ _ hguard₁ hstdin₁ S1₁ S2₁ =>
+    cases hs₂ with
+    | orElse _ _ _ _ _ hguard₂ hstdin₂ S1₂ S2₂ =>
+    have hstdineq : stdin₁ = stdin₂ := by
+      rcases hstdin₁ with h | h
+      · exact hin h
+      · rcases hstdin₂ with h2 | h2
+        · exact hin h2
+        · rw [h, h2]
+    rw [hstdineq] at S1₁ S2₁ ⊢
+    obtain ⟨hga, hgo, hge⟩ := touchesOnlyPublic_agrees p₁ s₁ s₂ stdin₂ hguard₁ hag
+    obtain ⟨_, _, hpc1⟩ := ih₁ s₁ s₂ stdin₂ stdin₂ pub hag S1₁ S1₂ (fun _ => rfl)
+    obtain ⟨ha2, hb2, hc2⟩ :=
+      ih₂ (evalPipelineFull p₁ s₁ stdin₂).1 (evalPipelineFull p₁ s₂ stdin₂).1
+        .empty .empty false hga S2₁ S2₂ (fun _ => rfl)
+    refine ⟨?_, ?_, ?_⟩
+    · simp only [evalPipelineFull]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => exact hga
+      | failure n => exact ha2
+    · simp only [evalPipelineFull, provOut]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => intro _; exact hgo
+      | failure n => exact hb2
+    · simp only [provOut]; rw [hge]
+      cases hec : (evalPipelineFull p₁ s₂ stdin₂).2.2 with
+      | success => exact hpc1
+      | failure n => exact hc2
+
 /-- NONINTERFERENCE (the top-level security guarantee): if two filesystems agree on
 all public paths and the same pipeline is safe in both, then running it in either
 yields the same public projection — a safe pipeline cannot leak private data into
@@ -196,13 +573,21 @@ before its fix:
   but not its stdin. Now REJECTED (the conditional's incoming stdin is
   private-provenance).
 
-With all FOUR known holes closed, this theorem is BELIEVED PROVABLE (pending the
-next proof attempt). Top-level pipelines start from `.empty` stdin with `pub = false`;
-`.empty` counts as public-provenance for the guard-stdin check (it is constant,
-hence agrees across states). -/
+With all FOUR known holes closed, this theorem is now PROVED (`eval_agrees`), with a
+clean axiom footprint (`propext`, `Classical.choice`, `Quot.sound` — no `sorryAx`, no
+`native_decide`). Top-level pipelines start from `.empty` stdin with `pub = false`;
+`.empty` counts as public-provenance for the guard-stdin check (it is constant, hence
+agrees across states — the `fun _ => rfl` witness below, since `pub = false`).
+
+PROOF: specialise the relational invariant `eval_agrees` to top-level `.empty` stdin
+(where the `pub = true → stdin₁ = stdin₂` obligation is vacuous), extract its
+public-state-agreement conjunct, and turn agreement into equal public projections. -/
 theorem shellwall_noninterference
     (a : Owner) (p : Pipeline) (s₁ s₂ : FileState)
     (hagree : agreeOnPublicPaths s₁ s₂)
     (h₁ : SafePipeline a p s₁ .empty false) (h₂ : SafePipeline a p s₂ .empty false) :
     publicProjection (evalPipeline p s₁).1 = publicProjection (evalPipeline p s₂).1 := by
-  sorry
+  obtain ⟨ha, _, _⟩ :=
+    eval_agrees a p s₁ s₂ .empty .empty false hagree h₁ h₂ (fun _ => rfl)
+  simp only [evalPipeline]
+  exact publicProjection_eq_of_agree ha
