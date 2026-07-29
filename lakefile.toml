@@ -1,0 +1,38 @@
+name = "ShellWall"
+version = "0.1.0"
+# `Test` is included so `lake build` elaborates Test/Battery.lean, whose `#guard`
+# assertions fail the build if any `checkSafe` verdict moves. The `fidelity` exe is
+# deliberately NOT a default target: it shells out to real bash, so it must be run
+# explicitly (`lake exe fidelity`), keeping `lake build` pure and hermetic.
+defaultTargets = ["shellwall", "Test"]
+
+# `autoImplicit` silently binds an unknown identifier appearing in a type as an
+# implicit type variable. In Prompt 04 that turned an accidentally-deleted
+# `Owner` declaration into an auto-bound generic, letting a meaningless
+# definition typecheck; the error surfaced several lines away as a confusing
+# "invalid dotted identifier". For a project whose entire value rests on a green
+# build MEANING something, that failure mode is unacceptable.
+# Applies to ShellWall's own modules only -- dependencies compile with their own
+# options, so Mathlib is unaffected.
+[leanOptions]
+autoImplicit = false
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.31.0"
+
+
+[[lean_lib]]
+name = "ShellWall"
+
+[[lean_lib]]
+name = "Test"
+
+[[lean_exe]]
+name = "shellwall"
+root = "Main"
+
+[[lean_exe]]
+name = "fidelity"
+root = "FidelityMain"
