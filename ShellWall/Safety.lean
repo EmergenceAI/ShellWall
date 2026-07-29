@@ -1,15 +1,26 @@
 import ShellWall.Semantics
 
-/-! PROVENANCE, NOT A VALUE PREDICATE (design note). Public-ness of content is tracked
+/-! ## TRUSTED KERNEL — the safety spec
+
+`CanWrite`, `SafeCmd`, `SafePipeline` below are TRUSTED inductive definitions: the
+guarantee is only as good as reading these and believing they capture "safe to run".
+Audit them by inspection. Everything downstream (`checkFull`/`checkSafe` in Decide,
+the noninterference proof further down this file) is proven RELATIVE to them and need
+not be trusted directly. See the ARCHITECTURE note in `ShellWall.lean` and the
+public-provenance kernel in `Provenance.lean` (`PublicProv`/`PipeProv`).
+
+PROVENANCE, NOT A VALUE PREDICATE (design note). Public-ness of content is tracked
 FORWARD, along execution, by the Bool `cmdOutIsPublic`/`provOut` (in `Semantics`),
-pinned to the PATHS a stage reads. v1 originally used a per-state value predicate
+pinned to the PATHS a stage reads, and characterized inductively by `PublicProv`
+(`Provenance.lean`). v1 originally used a per-state value predicate
 `IsPublic : FileState → Content → Prop` as the `write_public_ok` obligation; that was
 relationally UNSOUND (a private value coinciding with a public path's bytes satisfied
 it in each state yet differed across agreeing states — the Prompt-15 counterexample
 `cat /private/secret > public`), so Prompt 16 replaced it with provenance (`pub =
 true`) and Prompt-22 deleted the dead predicate. The load-bearing omission survives in
-`cmdOutIsPublic`: `wc` (and any aggregation) is NEVER certified public, closing the
-covert statistical channel. Do NOT reintroduce a value-based public predicate. -/
+`cmdOutIsPublic`/`PublicProv`: `wc` (and any aggregation) is NEVER certified public,
+closing the covert statistical channel. Do NOT reintroduce a value-based public
+predicate. -/
 
 /-- `CanWrite a p`: owner `a` has write-authority over path `p`. In v1 the only
 way to hold it is to own `p` outright; delegation is deferred to v2. -/

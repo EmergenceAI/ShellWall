@@ -1,5 +1,14 @@
 import ShellWall.Safety
 
+/-! # UNTRUSTED DECISION LAYER (proven sound)
+
+`canWriteB`/`checkCmd`/`checkFull`/`checkSafe` are FAST Bool decision procedures — the
+untrusted layer. They are not trusted directly: `checkSafe_sound`/`checkFull_sound`
+(below) prove a `true` verdict implies the trusted `SafePipeline` kernel (Safety.lean),
+and `provOut_sound` (Provenance.lean) links the provenance flag they thread to the
+`PublicProv` kernel. Completeness is intentionally NOT claimed — the gate may reject
+some genuinely-safe pipelines. See the ARCHITECTURE note in `ShellWall.lean`. -/
+
 /-! ## Deciding `CanWrite` -/
 
 /-- Boolean decision of `CanWrite a p`, which in v1 reduces to `ownerOf p = a`
