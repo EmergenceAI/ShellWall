@@ -22,9 +22,9 @@ def canWriteB (a : Owner) (p : Path) : Bool := decide (ownerOf p = a)
 -- Provenance is tracked FORWARD by `cmdOutIsPublic`/`provOut` (in `Semantics`),
 -- shared by both the decider here and `SafeCmd`/`SafePipeline`. There is
 -- deliberately no `isPublicB : FileState → Content → Bool` (a backward, value-based
--- decision): `Content` carries no trace of its derivation, and — per the Prompt-15
--- counterexample — value-based public-ness is relationally unsound anyway (v1 had a
--- value predicate; deleted in Prompt 22). Forward provenance is the right notion.
+-- decision): `Content` carries no trace of its derivation, and value-based public-ness
+-- is relationally unsound anyway (a private value coinciding with a public path's bytes
+-- would satisfy it). Forward provenance is the right notion.
 
 /-! ## Deciding safety -/
 
@@ -70,7 +70,7 @@ branches (v1 conservatism, matching `SafePipeline`).
 
 CONSEQUENCE (intended, load-bearing): `checkSafe`'s notion of "the content written"
 is DEFINED by `evalPipelineFull`, so its correctness is downstream of the
-semantics' fidelity — this project's central assumption (§4). -/
+semantics' fidelity — this project's central assumption. -/
 def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool × Bool
   | .single c, s, _stdin, pub => (checkCmd a c s pub, cmdOutIsPublic c s pub)
   -- `pipe` feeds stage 1's stdout into stage 2, and stage 2 is checked in the
@@ -96,10 +96,10 @@ def checkFull (a : Owner) : Pipeline → FileState → Content → Bool → Bool
       let (s₁, _, ec₁) := evalPipelineFull p₁ s stdin
       let (ok₂, pub₂) := checkFull a p₂ s₁ .empty false
       -- SAFETY: both branches safe AND public-guard: `p₁` touches only public PATHS
-      -- (Prompt 14) AND its incoming STDIN is public-provenance (`pub`) or `.empty`
-      -- (Prompt 21 — closes the guard-stdin channel; matches SafePipeline.andThen).
-      -- FAITHFUL output flag (unchanged from Prompt 09): `&&` runs stage 2 only on
-      -- SUCCESS, so on failure the pipeline's output — and its flag — is stage 1's.
+      -- AND its incoming STDIN is public-provenance (`pub`) or `.empty` — closing the
+      -- guard-stdin channel; matches SafePipeline.andThen.
+      -- FAITHFUL output flag: `&&` runs stage 2 only on SUCCESS, so on failure the
+      -- pipeline's output — and its flag — is stage 1's.
       (ok₁ && ok₂ && touchesOnlyPublic p₁ && (pub || decide (stdin = .empty)),
        match ec₁ with | .success => pub₂ | .failure _ => pub₁)
   | .orElse p₁ p₂, s, stdin, pub =>
@@ -138,9 +138,8 @@ threaded together (the second feeds the first in `pipe`):
 - (prov)   the decider's output flag equals `provOut` — so the flag `checkFull`
   threads into the next stage is exactly the one `SafePipeline` expects.
 
-Simpler than the pre-Prompt-16 version: the write obligation is now the checkable
-`pub = true` (no value-predicate reconstruction), because spec and decider share the
-same forward-provenance notion. -/
+The write obligation is the checkable `pub = true` (no value-predicate
+reconstruction), because spec and decider share the same forward-provenance notion. -/
 theorem checkFull_sound (a : Owner) (p : Pipeline) :
     ∀ (s : FileState) (stdin : Content) (pub : Bool),
       ((checkFull a p s stdin pub).1 = true → SafePipeline a p s stdin pub) ∧

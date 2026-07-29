@@ -12,13 +12,13 @@ public-provenance kernel in `Provenance.lean` (`PublicProv`/`PipeProv`).
 PROVENANCE, NOT A VALUE PREDICATE (design note). Public-ness of content is tracked
 FORWARD, along execution, by the Bool `cmdOutIsPublic`/`provOut` (in `Semantics`),
 pinned to the PATHS a stage reads, and characterized inductively by `PublicProv`
-(`Provenance.lean`). v1 originally used a per-state value predicate
-`IsPublic : FileState → Content → Prop` as the `write_public_ok` obligation; that was
-relationally UNSOUND (a private value coinciding with a public path's bytes satisfied
-it in each state yet differed across agreeing states — the Prompt-15 counterexample
-`cat /private/secret > public`), so Prompt 16 replaced it with provenance (`pub =
-true`) and Prompt-22 deleted the dead predicate. The load-bearing omission survives in
-`cmdOutIsPublic`/`PublicProv`: `wc` (and any aggregation) is NEVER certified public,
+(`Provenance.lean`). A per-state value predicate of the form
+`FileState → Content → Prop` as the `write_public_ok` obligation would be relationally
+UNSOUND (a private value coinciding with a public path's bytes satisfies it in each
+state yet differs across agreeing states — e.g. `cat /private/secret > public`);
+provenance (`pub = true`) avoids this because it is pinned to the paths READ, so
+agreeing states force the same value. The load-bearing omission is that
+`cmdOutIsPublic`/`PublicProv` NEVER certify `wc` (or any aggregation) as public,
 closing the covert statistical channel. Do NOT reintroduce a value-based public
 predicate. -/
 
@@ -34,13 +34,12 @@ given `stdin` content flowing in, where `pub : Bool` records whether that stdin 
 public-PROVENANCE (produced by reads of public paths / public-preserving transforms
 — see `provOut`). Only `write_public_ok` consumes `pub`.
 
-PROMPT-16 FIX: `write_public_ok` requires `pub = true` (provenance) rather than a
-per-state value predicate. The value-based obligation was relationally UNSOUND: a
-private value coinciding with a public path's bytes satisfied it in each state
-separately, yet differed across agreeing states (the Prompt-15 counterexample
-`cat /private/secret > public`). Provenance is pinned to the paths READ, so agreeing
-states force the same value. This aligns the spec with the already-correct decider
-(`checkCmd`/`cmdOutIsPublic`); the dead value predicate was removed in Prompt 22.
+`write_public_ok` requires `pub = true` (provenance) rather than a per-state value
+predicate. A value-based obligation would be relationally UNSOUND: a private value
+coinciding with a public path's bytes satisfies it in each state separately, yet
+differs across agreeing states (e.g. `cat /private/secret > public`). Provenance is
+pinned to the paths READ, so agreeing states force the same value. This aligns the
+spec with the decider (`checkCmd`/`cmdOutIsPublic`).
 
 The four stream-transform commands (grep/sort/uniq/wc) touch no path directly, so
 they are unconditionally safe *as commands*; their provenance effect is in
@@ -53,8 +52,8 @@ inductive SafeCmd : Owner → Cmd → FileState → Content → Bool → Prop wh
       SafeCmd a (.read p) s stdin pub
 
   /-- Writing to a public (`publicRW`) path is safe iff the writer owns it AND the
-  content flowing in is public-PROVENANCE (`pub = true`). See the type note: this is
-  the Prompt-16 relational-soundness fix (provenance, not per-state value). -/
+  content flowing in is public-PROVENANCE (`pub = true`). See the type note: the
+  obligation is on provenance, not per-state value (relational soundness). -/
   | write_public_ok (a : Owner) (p : Path) (mode : WriteMode) (s : FileState)
       (stdin : Content) (pub : Bool)
       (hclass : classify p = .publicRW)
@@ -132,11 +131,11 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Bool �
   fresh `.empty` stdin and `pub = false`. PUBLIC-GUARD requirement — the guard `a`'s
   exit code (which decides whether `b` runs) must be public-determined, so it agrees
   across states that agree on public paths. That needs BOTH:
-  - `hguard`: `a` touches only public PATHS (Prompt 14 — closes the path channel);
+  - `hguard`: `a` touches only public PATHS (closes the path channel);
   - `hstdin`: `a`'s incoming STDIN is public-provenance (`pub = true`) or the
     canonical empty content (`.empty`, which is constant hence trivially agrees).
-    NEW (Prompt 21): without this, a guard like `grep` reads private data through a
-    piped stdin and leaks it via the exit code — the fourth counterexample. -/
+    Without this, a guard like `grep` reads private data through a piped stdin and
+    leaks it via the exit code. -/
   | andThen (a : Owner) (p₁ p₂ : Pipeline) (s : FileState) (stdin : Content) (pub : Bool)
       (hguard : touchesOnlyPublic p₁ = true)
       (hstdin : pub = true ∨ stdin = .empty) :
@@ -160,8 +159,8 @@ inductive SafePipeline : Owner → Pipeline → FileState → Content → Bool �
 The relational (two-execution) machinery proving `shellwall_noninterference`. Built
 bottom-up: agreement algebra → command-level agreement (`evalCmd_agrees`) → the
 public-program-counter lemma (`touchesOnlyPublic_agrees`) → the main relational
-invariant (`eval_agrees`) → the theorem. See the theorem's docstring for where each
-of the four historical fixes is consumed. -/
+invariant (`eval_agrees`) → the theorem. See the `eval_agrees` docstring for where
+each of the four safety requirements is consumed. -/
 
 /-- `updateState` preserves public-path agreement when the SAME content is written to
 the SAME path. -/
@@ -225,9 +224,9 @@ theorem evalCmd_fst_grep (pat : String) (s : FileState) (stdin : Content) :
 both runs, from agreeing states with stdin that agrees when public-provenance
 (`pub = true`): the resulting states agree on public paths; the stdout is EQUAL when
 the command's output is public-provenance (`cmdOutIsPublic = true`); and the output
-provenance flag agrees. Consumes: the `write_public_ok` `pub = true` obligation
-(Prompt 16) forces equal written content into public paths; `write_private_ok` sends
-(possibly differing) content only to a private path, invisible to the projection. -/
+provenance flag agrees. Consumes: the `write_public_ok` `pub = true` obligation forces
+equal written content into public paths; `write_private_ok` sends (possibly differing)
+content only to a private path, invisible to the projection. -/
 theorem evalCmd_agrees (a : Owner) (c : Cmd) (s₁ s₂ : FileState)
     (stdin₁ stdin₂ : Content) (pub : Bool)
     (hag : agreeOnPublicPaths s₁ s₂)
@@ -324,13 +323,12 @@ theorem evalCmd_agrees (a : Owner) (c : Cmd) (s₁ s₂ : FileState)
     · intro hp; simp [cmdOutIsPublic] at hp
     · simp only [cmdOutIsPublic]
 
-/-- GUARD-EXIT AGREEMENT (the Prompt-14 payoff, `hguard`). A pipeline that touches only
-PUBLIC paths, run on two states agreeing on public paths WITH THE SAME stdin, produces
+/-- GUARD-EXIT AGREEMENT (the `hguard` payoff). A pipeline that touches only PUBLIC
+paths, run on two states agreeing on public paths WITH THE SAME stdin, produces
 agreeing public state, EQUAL stdout, and EQUAL exit code. Its control flow and output
 are functions of the public part of the state only — the "public program counter"
-discipline. Proved by induction over the pipeline structure (nested conditionals
-handled automatically), so it also validates the Prompt-21 Step-0 reasoning that
-compound guards are covered. -/
+discipline. Proved by induction over the pipeline structure, so compound and nested
+guards are covered automatically. -/
 theorem touchesOnlyPublic_agrees (p : Pipeline) :
     ∀ (s₁ s₂ : FileState) (stdin : Content),
       touchesOnlyPublic p = true → agreeOnPublicPaths s₁ s₂ →
@@ -412,15 +410,15 @@ theorem touchesOnlyPublic_agrees (p : Pipeline) :
 /-- THE RELATIONAL INVARIANT (main induction). For a pipeline safe in two runs from
 agreeing states, with stdin that agrees when public-provenance (`pub = true`):
 (1) resulting public state agrees; (2) the stdout is EQUAL when the pipeline's output
-is public-provenance (`provOut = true`) — the `provOut`-transport / Prompt-16
-`pub`-provenance payoff; (3) the output provenance flag agrees across runs.
+is public-provenance (`provOut = true`) — the provenance-transport payoff; (3) the
+output provenance flag agrees across runs.
 
-Where the four fixes are consumed:
-- `evalCmd_agrees` (single/write case): content-indexing (Prompt 07) + `pub` provenance
-  (Prompt 16) force equal content into public paths.
-- `andThen`/`orElse`: `hguard` (Prompt 14) lets `touchesOnlyPublic_agrees` fire, and
-  `hstdin` (Prompt 21) — combined across BOTH runs — forces `stdin₁ = stdin₂`, so the
-  guard's exit agrees and the SAME branch runs in both. -/
+Where the four safety requirements are consumed:
+- `evalCmd_agrees` (single/write case): the content-indexed write obligation and the
+  `pub` provenance flag force equal content into public paths.
+- `andThen`/`orElse`: `hguard` lets `touchesOnlyPublic_agrees` fire, and `hstdin` —
+  combined across BOTH runs — forces `stdin₁ = stdin₂`, so the guard's exit agrees and
+  the SAME branch runs in both. -/
 theorem eval_agrees (a : Owner) (p : Pipeline) :
     ∀ (s₁ s₂ : FileState) (stdin₁ stdin₂ : Content) (pub : Bool),
       agreeOnPublicPaths s₁ s₂ →
@@ -540,22 +538,21 @@ public paths. Top-level pipelines start from `.empty` stdin.
 SCOPE: over the FILESYSTEM public projection only; does NOT cover stdout — see the
 `THREAT MODEL — stdout (v1)` note at the top of `Semantics.lean`.
 
-SPEC HISTORY — FOUR leaks found and closed, each a machine-checked counterexample
-before its fix:
-- unconstrained write witness (Prompt 06 → fixed Prompt 07);
-- implicit exit-code flow via a private-PATH guard (Prompt 13 → `touchesOnlyPublic`
-  guard, Prompt 14);
-- per-state value-predicate coincidence (Prompt 15 → provenance-based
-  `write_public_ok`, Prompt 16; dead predicate deleted Prompt 22);
-- implicit exit-code flow via a private-STDIN guard (Prompt 20 →
-  `hstdin : pub = true ∨ stdin = .empty` on `andThen`/`orElse`, Prompt 21):
+FOUR leak channels the spec closes — each was a real counterexample to an earlier,
+weaker spec, and each is defended by a specific mechanism:
+- unconstrained write witness → the content-indexed `write_public_ok` obligation;
+- implicit exit-code flow via a private-PATH guard → the `touchesOnlyPublic` guard;
+- per-state value-predicate coincidence → provenance-based `write_public_ok` (the
+  `pub = true` obligation, not a per-state value);
+- implicit exit-code flow via a private-STDIN guard → the
+  `hstdin : pub = true ∨ stdin = .empty` premise on `andThen`/`orElse`. Example:
   `cat /private/secret | (grep yes && (cat /shared/ref > pub))` — the guard reads
   private data through its piped stdin; `touchesOnlyPublic` checks the guard's paths
-  but not its stdin. Now REJECTED (the conditional's incoming stdin is
-  private-provenance).
+  but not its stdin, so `hstdin` is what rejects it (the conditional's incoming stdin
+  is private-provenance).
 
-With all FOUR known holes closed, this theorem is now PROVED (`eval_agrees`), with a
-clean axiom footprint (`propext`, `Classical.choice`, `Quot.sound` — no `sorryAx`, no
+With all four channels closed, this theorem is PROVED (`eval_agrees`), with a clean
+axiom footprint (`propext`, `Classical.choice`, `Quot.sound` — no `sorryAx`, no
 `native_decide`). Top-level pipelines start from `.empty` stdin with `pub = false`;
 `.empty` counts as public-provenance for the guard-stdin check (it is constant, hence
 agrees across states — the `fun _ => rfl` witness below, since `pub = false`).

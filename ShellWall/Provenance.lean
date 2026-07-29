@@ -10,18 +10,18 @@ directly; nothing in the fast decision layer (`cmdOutIsPublic`/`provOut`,
 (`cmdOutIsPublic_sound`, `provOut_sound`), which prove the fast Bool functions sound
 against this kernel.
 
-PROVENANCE, NOT VALUE (the critical correction). This is deliberately NOT the deleted
-value-based `IsPublic : FileState → Content → Prop` — that predicate, used as the
-write obligation, was the third soundness hole (a private value coinciding with a
-public path's bytes satisfied it). The difference is structural: a proposition over
-`(state, content)` alone cannot tell "read from a public path" from "happens to equal
-a public file's bytes." So the kernel is indexed by the COMMAND / EXECUTION that
+PROVENANCE, NOT VALUE. This is deliberately NOT a value-based predicate of the form
+`FileState → Content → Prop` used as the write obligation — such a predicate is
+relationally unsound (a private value coinciding with a public path's bytes satisfies
+it). The difference is structural: a proposition over `(state, content)` alone cannot
+tell "read from a public path" from "happens to equal a public file's bytes." So the
+kernel is indexed by the COMMAND / EXECUTION that
 produced the content, not by the content value. Consequently
 `PublicProv (.read privatePath) s b` has NO applicable constructor even when
 `s privatePath` coincides byte-for-byte with a public file — provenance is pinned to
 the path actually read.
 
-NO AGGREGATION (load-bearing omission, design §7.3). There is deliberately NO
+NO AGGREGATION (load-bearing omission). There is deliberately NO
 constructor for `wc`/count/hash/statistics. Aggregation is the covert statistical
 disclosure channel; certifying it public would reopen a leak. Do NOT add such a
 constructor. This mirrors `cmdOutIsPublic`'s `| .wc => false`.
@@ -114,8 +114,8 @@ inductive PipeProv : Pipeline → FileState → Content → Bool → Prop where
 /-- BRIDGE (pipeline level): the untrusted Bool `provOut` is SOUND w.r.t. the kernel —
 `provOut p s stdin pub = true` yields a `PipeProv` proof. Proved by induction mirroring
 `provOut`'s recursion; each `true`-producing branch maps to exactly one kernel
-constructor. This is the manager's "the interpreter hands the kernel a proof" at the
-pipeline level. Soundness only (no converse). -/
+constructor — the interpreter hands the kernel a proof, at the pipeline level.
+Soundness only (no converse). -/
 theorem provOut_sound (p : Pipeline) :
     ∀ (s : FileState) (stdin : Content) (pub : Bool),
       provOut p s stdin pub = true → PipeProv p s stdin pub := by

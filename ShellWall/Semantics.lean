@@ -4,8 +4,8 @@ import ShellWall.Policy
 
 /-! # THREAT MODEL — stdout (v1)
 
-Recorded verbatim as the resolution of gap C2 (Prompt 03 report): `evalPipeline`
-returns only `(FileState × ExitCode)`, so a pipeline sending private data to
+`evalPipeline` returns only `(FileState × ExitCode)`, so a pipeline sending private
+data to
 unredirected stdout (`cat /private/secret`) has no filesystem effect and is
 invisible to this model — and because v1's `read_ok` is unconditional, such a
 command is *permitted* by `SafeCmd` while `shellwall_noninterference` remains
@@ -324,9 +324,9 @@ def cmdTouchesOnlyPublic : Cmd → Bool
 public. Used to gate conditional guards (`&&`/`||`): if a guard touches only public
 paths, its execution — hence its exit code — is determined solely by the public
 part of the state, so two states agreeing on all public paths run (or skip) the
-body identically. That closes the implicit-flow channel the Prompt-13
-counterexample exploited. Conservative (it rejects any conditional whose guard
-reads/writes/removes a private path) but sound — the standard "public
+body identically. That closes an implicit exit-code flow channel: a guard reading a
+private path could otherwise branch on private state. Conservative (it rejects any
+conditional whose guard reads/writes/removes a private path) but sound — the standard "public
 program-counter" discipline from information-flow security. -/
 def touchesOnlyPublic : Pipeline → Bool
   | .single c    => cmdTouchesOnlyPublic c
@@ -352,17 +352,15 @@ def agreeOnPublicPaths (s₁ s₂ : FileState) : Prop :=
 `cmdOutIsPublic`/`provOut` compute, FORWARD along execution, whether a command's or
 pipeline's stdout is "public-provenance": built only from reads of PUBLIC paths and
 public-preserving transforms. This is the notion that makes the safety spec
-relationally sound (Prompt 16): unlike a per-state, value-based public predicate
-(which a private value coinciding with a public one satisfies — v1 had one, deleted
-in Prompt 22), provenance is pinned to the paths READ, so agreeing states yield the
-same value. The DECIDER already used this;
-`SafeCmd`/`SafePipeline` now consume it too, and it is defined here so both can. -/
+relationally sound: unlike a per-state, value-based public predicate (which a private
+value coinciding with a public one satisfies), provenance is pinned to the paths READ,
+so agreeing states yield the same value. The decider and `SafeCmd`/`SafePipeline` both
+consume it, and it is defined here so both can. -/
 
 /-- Whether a command's stdout is public-PROVENANCE, given the state it runs in and
-whether its stdin is public-provenance. Reading a PRIVATE path yields `false` even
-if the bytes coincide with a public file's — the fix for the Prompt-15
-counterexample. Stream transforms preserve the flag; `wc`/writes/`rm`/`mkdir` are
-never public. -/
+whether its stdin is public-provenance. Reading a PRIVATE path yields `false` even if
+the bytes coincide with a public file's — provenance is pinned to the path read.
+Stream transforms preserve the flag; `wc`/writes/`rm`/`mkdir` are never public. -/
 def cmdOutIsPublic (c : Cmd) (s : FileState) (stdinPub : Bool) : Bool :=
   match c with
   -- a read is public-provenance iff the path is PUBLIC and present (a missing read

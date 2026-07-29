@@ -17,7 +17,7 @@ inductive PathClass where
 
 -- Externally configured policy table. In a real deployment this would be loaded
 -- from config; v1 fixes a small, legible, illustrative table so that `checkSafe`
--- (Phase 5) is computable and testable. Total and deterministic.
+-- is computable and testable. Total and deterministic.
 --
 -- DENY-BY-DEFAULT: the final catch-all is a deliberate policy stance, not a
 -- throwaway. The safest classification for an *unknown* path is the most
